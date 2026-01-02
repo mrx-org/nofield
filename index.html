@@ -205,10 +205,22 @@
             <input id="radiological" type="checkbox" />
             Radiological
           </label>
+          <label class="toggle">
+            <input id="showRender" type="checkbox" checked />
+            3D Render
+          </label>
+          <label class="toggle">
+            <input id="showCrosshair" type="checkbox" checked />
+            Crosshair
+          </label>
+          <div class="sliderRow" style="margin-top: 8px;">
+            <div style="font-size: 12px; color: var(--muted);">Zoom 2D: <span class="mono" id="zoom2DVal">0.65</span>x</div>
+            <input id="zoom2D" type="range" min="0.2" max="2.0" step="0.05" value="0.65" style="width: 100px;" />
+          </div>
           <div class="sliderGroup" id="fovControls">
             <div class="sliderRow">
               <div>FOV X (mm) <span class="mono" id="fovXVal">—</span></div>
-              <input id="fovX" type="range" min="10" max="400" step="1" value="180" />
+              <input id="fovX" type="range" min="10" max="400" step="1" value="220" />
             </div>
             <div class="sliderRow">
               <div>FOV Y (mm) <span class="mono" id="fovYVal">—</span></div>
@@ -216,19 +228,19 @@
             </div>
             <div class="sliderRow">
               <div>FOV Z (mm) <span class="mono" id="fovZVal">—</span></div>
-              <input id="fovZ" type="range" min="10" max="400" step="1" value="180" />
+              <input id="fovZ" type="range" min="10" max="400" step="1" value="100" />
             </div>
             <div class="sliderRow">
               <div>Offset X (mm) <span class="mono" id="fovOffXVal">0 mm</span></div>
-              <input id="fovOffX" type="range" min="-100" max="100" step="1" value="0" />
+              <input id="fovOffX" type="range" min="-100" max="100" step="0.1" value="0" />
             </div>
             <div class="sliderRow">
               <div>Offset Y (mm) <span class="mono" id="fovOffYVal">0 mm</span></div>
-              <input id="fovOffY" type="range" min="-100" max="100" step="1" value="0" />
+              <input id="fovOffY" type="range" min="-100" max="100" step="0.1" value="0" />
             </div>
             <div class="sliderRow">
               <div>Offset Z (mm) <span class="mono" id="fovOffZVal">0 mm</span></div>
-              <input id="fovOffZ" type="range" min="-100" max="100" step="1" value="0" />
+              <input id="fovOffZ" type="range" min="-100" max="100" step="0.1" value="0" />
             </div>
             <div class="sliderRow">
               <div>Rot X (deg) <span class="mono" id="fovRotXVal">0°</span></div>
@@ -317,7 +329,7 @@
     </div>
 
     <script type="module">
-      import { Niivue, NVMesh, NVImage, SLICE_TYPE, DRAG_MODE } from "https://unpkg.com/@niivue/niivue@0.65.0/dist/index.js";
+      import { Niivue, NVMesh, NVImage, SLICE_TYPE, DRAG_MODE, SHOW_RENDER } from "https://unpkg.com/@niivue/niivue@0.65.0/dist/index.js";
 
       const DEMO_URL =
         "https://niivue.github.io/niivue-demo-images/mni152.nii.gz";
@@ -330,6 +342,10 @@
       const showFov = document.getElementById("showFov");
       const sliceMM = document.getElementById("sliceMM");
       const radiological = document.getElementById("radiological");
+      const showRender = document.getElementById("showRender");
+      const showCrosshair = document.getElementById("showCrosshair");
+      const zoom2D = document.getElementById("zoom2D");
+      const zoom2DVal = document.getElementById("zoom2DVal");
       const fovControls = document.getElementById("fovControls");
       const fovX = document.getElementById("fovX");
       const fovY = document.getElementById("fovY");
@@ -513,6 +529,14 @@
         logging: false,
       });
 
+      // Set the layout to ROW (3) for 4x1 display (Axial, Coronal, Sagittal, Render)
+      nv.setMultiplanarLayout(3); 
+      nv.opts.multiplanarShowRender = SHOW_RENDER.ALWAYS;
+      showRender.checked = true;
+
+      // Set default 2D Zoom
+      nv.scene.pan2Dxyzmm[3] = 0.65;
+
       // Keep offsets stable relative to the FOV center when FOV size changes:
       // Box is defined as Center +/- Size/2, so Center is stable by default.
       
@@ -636,9 +660,9 @@
       function getMouseMm(e) {
           if (!nv.volumes?.length) return null;
           try {
-             const rect = canvas.getBoundingClientRect();
-             const x = e.clientX - rect.left;
-             const y = e.clientY - rect.top;
+          const rect = canvas.getBoundingClientRect();
+          const x = e.clientX - rect.left;
+          const y = e.clientY - rect.top;
              const frac = nv.canvasPos2frac([x, y]); 
              const { vol, dim3, affine } = getVolumeInfo();
              if (!dim3) return null;
@@ -654,12 +678,12 @@
           // Use the crosshair position in canvas pixels as the rotation pivot.
           // We must use the tile that the mouse is currently over to get the correct pivot.
           const frac = nv.scene.crosshairPos;
-          
+
           // Niivue's frac2canvasPosWithTile allows us to specify which view type we prefer.
           // This ensures the pivot point is in the same tile as the mouse.
           const tileInfo = nv.frac2canvasPosWithTile(frac, currentAxCorSag);
           if (!tileInfo) return 0;
-          
+            
           const canvasPos = tileInfo.pos;
           const rect = canvas.getBoundingClientRect();
           
@@ -682,7 +706,7 @@
           if (radiological && radiological.checked) {
               if (currentAxCorSag === 0 || currentAxCorSag === 1) {
                   angle = -angle;
-              }
+         }
           }
           
           return angle;
@@ -694,7 +718,7 @@
             e.preventDefault();
             e.stopPropagation();
             e.stopImmediatePropagation();
-
+         
             savedDragMode = nv.opts.dragMode;
             nv.opts.dragMode = DRAG_MODE.callbackOnly;
             
@@ -711,6 +735,7 @@
                 dragStartAngle = getMouseAngle(e);
                 setStatus("Rotating FOV...");
             } else if (e.button === 0) { // Left Click
+                updateViewFromMouse(e); // Immediately detect view under mouse
                 isDraggingFov = true;
                 dragStartMm = getMouseMm(e); 
                 dragStartOffsets = [Number(fovOffX.value), Number(fovOffY.value), Number(fovOffZ.value)];
@@ -733,11 +758,11 @@
                const dx = currMm[0] - dragStartMm[0];
                const dy = currMm[1] - dragStartMm[1];
                const dz = currMm[2] - dragStartMm[2];
-               fovOffX.value = String(Math.round(dragStartOffsets[0] + dx));
-               fovOffY.value = String(Math.round(dragStartOffsets[1] + dy));
-               fovOffZ.value = String(Math.round(dragStartOffsets[2] + dz));
-               rebuildFovLive();
-            }
+               fovOffX.value = String((dragStartOffsets[0] + dx).toFixed(1));
+               fovOffY.value = String((dragStartOffsets[1] + dy).toFixed(1));
+               fovOffZ.value = String((dragStartOffsets[2] + dz).toFixed(1));
+            rebuildFovLive();
+         }
          }
          else if (isRotatingFov) {
              const currAngle = getMouseAngle(e);
@@ -864,7 +889,7 @@
         // coordinate system Niivue uses for world-space rendering and crosshairs.
         // Using header pixdims can lead to mismatches if the volume was reoriented 
         // or if the header units/axes are inconsistent with the affine.
-        
+
         const vox2world = voxelToWorldFactory(affine);
         const w000 = vox2world(0, 0, 0);
         const w100 = vox2world(1, 0, 0);
@@ -1319,13 +1344,29 @@
         nv.setRadiologicalConvention(radiological.checked);
       });
 
+      showRender.addEventListener("change", () => {
+        nv.opts.multiplanarShowRender = showRender.checked ? SHOW_RENDER.ALWAYS : SHOW_RENDER.NEVER;
+        nv.drawScene();
+      });
+
+      showCrosshair.addEventListener("change", () => {
+        nv.setCrosshairWidth(showCrosshair.checked ? 1 : 0);
+      });
+
+      zoom2D.addEventListener("input", () => {
+        const val = parseFloat(zoom2D.value);
+        zoom2DVal.textContent = val.toFixed(2);
+        const pan = nv.scene.pan2Dxyzmm;
+        nv.setPan2Dxyzmm([pan[0], pan[1], pan[2], val]);
+      });
+
       function syncFovLabels() {
         fovXVal.textContent = `${Math.round(Number(fovX.value))} mm`;
         fovYVal.textContent = `${Math.round(Number(fovY.value))} mm`;
         fovZVal.textContent = `${Math.round(Number(fovZ.value))} mm`;
-        fovOffXVal.textContent = `${Math.round(Number(fovOffX.value))} mm`;
-        fovOffYVal.textContent = `${Math.round(Number(fovOffY.value))} mm`;
-        fovOffZVal.textContent = `${Math.round(Number(fovOffZ.value))} mm`;
+        fovOffXVal.textContent = `${Number(fovOffX.value).toFixed(1)} mm`;
+        fovOffYVal.textContent = `${Number(fovOffY.value).toFixed(1)} mm`;
+        fovOffZVal.textContent = `${Number(fovOffZ.value).toFixed(1)} mm`;
         fovRotXVal.textContent = `${Math.round(Number(fovRotX.value))}°`;
         fovRotYVal.textContent = `${Math.round(Number(fovRotY.value))}°`;
         fovRotZVal.textContent = `${Math.round(Number(fovRotZ.value))}°`;
@@ -1455,7 +1496,7 @@
               Number(maskY.value),
               Number(maskZ.value)
             ];
-            
+          
             // Calculate voxel spacing based on LOCAL FOV box size
             const voxelSpacing = [
               fovSizeMm[0] / maskDims[0],
@@ -1495,7 +1536,7 @@
             
             // Create mask data (all 1s, since the volume is the FOV)
             const maskData = new Uint8Array(maskDims[0] * maskDims[1] * maskDims[2]).fill(1);
-            
+          
             // Build the rotated NIfTI affine
             const finalMaskAffine = [
               R[0][0] * voxelSpacing[0], R[0][1] * voxelSpacing[1], R[0][2] * voxelSpacing[2], rasOrigin[0],
@@ -1583,8 +1624,8 @@
                                 hdrAffine[1][0], hdrAffine[1][1], hdrAffine[1][2], hdrAffine[1][3],
                                 hdrAffine[2][0], hdrAffine[2][1], hdrAffine[2][2], hdrAffine[2][3],
                                 hdrAffine[3][0], hdrAffine[3][1], hdrAffine[3][2], hdrAffine[3][3]
-                            ];
-                        }
+              ];
+          }
                     }
                     
                     if (hdrAffineRow) {
@@ -1628,8 +1669,8 @@
                         // Fallback: use matRAS as-is if header.affine not available
                         console.warn("Download: header.affine not available, using vol.matRAS as-is");
                         currentAffineRow = affineColToRowMajor(currentAffineCol);
-                    }
-                } else {
+              }
+          } else {
                     // Fallback: try to get from header directly
                     console.warn("Download: vol.matRAS or header.affine not available, trying header.affine directly");
                     const hdrAffine = hdr?.affine;
@@ -1643,7 +1684,7 @@
                                 hdrAffine[2][0], hdrAffine[2][1], hdrAffine[2][2], hdrAffine[2][3],
                                 hdrAffine[3][0], hdrAffine[3][1], hdrAffine[3][2], hdrAffine[3][3]
                             ];
-                        }
+          }
                     }
                     if (!currentAffineRow) {
                         throw new Error("Cannot determine affine for download");
@@ -1705,7 +1746,7 @@
                 
                 // Use extracted spacing to ensure affine and pixDims match
                 const finalPixDims = extractedSpacing;
-                
+
                 // Create NIfTI file with the combined affine matrix
                 // currentAffineRow now contains the COMPLETE affine:
                 //   - Rotation/scaling: from vol.matRAS (includes any user-applied rotations)
@@ -1831,22 +1872,23 @@
               // Convert native world units to mm for UI defaults.
               fullFovMm = [dx * voxelSpacingMm[0], dy * voxelSpacingMm[1], dz * voxelSpacingMm[2]];
 
-              const setRange = (el, mm) => {
+              const setRange = (el, mm, defaultVal) => {
                 const max = Math.max(10, Math.ceil(mm * 2));
                 el.min = "10";
                 el.max = String(max);
                 el.step = "1";
-                el.value = String(Math.round(mm));
+                // If a default value is provided, use it; otherwise fit to volume
+                el.value = defaultVal !== undefined ? String(defaultVal) : String(Math.round(mm));
               };
-              setRange(fovX, fullFovMm[0]);
-              setRange(fovY, fullFovMm[1]);
-              setRange(fovZ, fullFovMm[2]);
+              setRange(fovX, fullFovMm[0], 220);
+              setRange(fovY, fullFovMm[1], 220);
+              setRange(fovZ, fullFovMm[2], 100);
 
               const setOffRange = (el, mm) => {
                 const max = Math.max(10, Math.ceil(mm));
                 el.min = String(-max);
                 el.max = String(max);
-                el.step = "1";
+                el.step = "0.1";
                 el.value = "0";
               };
               // Allow offsets up to ~half the full FOV in each axis.
