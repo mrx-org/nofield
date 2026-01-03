@@ -24,9 +24,9 @@ def select_file(title, filetypes=None):
     """Open a file dialog to select a file."""
     if filetypes is None:
         filetypes = [
-            ("NIfTI files", "*.nii"),
-            ("Compressed NIfTI files", "*.nii.gz"),
-            ("All NIfTI files", "*.nii *.nii.gz"),
+            ("NIfTI files", "*.nii *.nii.gz"),
+            ("Standard NIfTI", "*.nii"),
+            ("Compressed NIfTI", "*.nii.gz"),
             ("All files", "*.*")
         ]
     
