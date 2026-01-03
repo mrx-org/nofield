@@ -241,6 +241,9 @@
             </div>
           <button id="load-demo" class="btn primary">Load demo (MNI152)</button>
             </div>
+          <div id="volume-list" style="margin-top: 12px; display: flex; flex-direction: column; gap: 4px; max-height: 150px; overflow-y: auto; border-top: 1px solid var(--border); padding-top: 8px;">
+            <!-- Volume checkboxes will be added here -->
+            </div>
           <div class="stateBox">
             <div class="stateRow">
               <div class="stateKey">Status</div>
@@ -447,6 +450,7 @@
       const voxVal = document.getElementById("voxVal");
       const mmVal = document.getElementById("mmVal");
       const locStrVal = document.getElementById("locStrVal");
+      const volumeListContainer = document.getElementById("volume-list");
 
       const btnNewFile = document.getElementById("btn-new-file");
       const btnAddFile = document.getElementById("btn-add-file");
@@ -677,6 +681,9 @@
       // Drag state
       let isDraggingFov = false;
       let isRotatingFov = false;
+      let isZooming2D = false;
+      let zoomStartMouseY = 0;
+      let zoomStartValue = 0;
         let dragStartRotation = 0;    // The rotation value when drag started
         let dragStartAngle = 0;       // The mouse angle when drag started
         let dragStartTileIndex = -1;  // The tile index when drag started
@@ -842,6 +849,17 @@
       }
 
       canvas.addEventListener("mousedown", (e) => {
+         if (e.button === 1) { // Middle Click / Wheel Press
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            isZooming2D = true;
+            zoomStartMouseY = e.clientY;
+            zoomStartValue = Number(zoom2D.value);
+            setStatus("Zooming 2D...");
+            return;
+         }
+
          const isCtrl = e.ctrlKey;
          if (isCtrl) {
             e.preventDefault();
@@ -881,6 +899,22 @@
       });
 
       window.addEventListener("mousemove", (e) => {
+         if (isZooming2D) {
+            const dy = e.clientY - zoomStartMouseY;
+            // UP (dy < 0) -> Scale increases (Zoom OUT)
+            // DOWN (dy > 0) -> Scale decreases (Zoom IN)
+            let newVal = zoomStartValue - (dy / 200);
+            newVal = Math.max(0.2, Math.min(2.0, newVal));
+            zoom2D.value = String(newVal.toFixed(2));
+            
+            // Apply zoom to Niivue
+            const pan = nv.scene.pan2Dxyzmm;
+            nv.setPan2Dxyzmm([pan[0], pan[1], pan[2], newVal]);
+            syncFovLabels();
+            rebuildFovLive();
+            return;
+         }
+
          if (isDraggingFov && dragStartOffsets) {
             const currMm = getMouseMm(e, dragStartTileIndex);
             if (currMm && dragStartMm) {
@@ -915,6 +949,11 @@
       });
 
       window.addEventListener("mouseup", () => {
+         if (isZooming2D) {
+            isZooming2D = false;
+            setStatus("Zoom 2D finished");
+            syncFovLabels();
+         }
          if (isDraggingFov) {
             isDraggingFov = false;
             nv.opts.dragMode = savedDragMode; 
@@ -1384,6 +1423,20 @@
         addTube([x1 - ht, y0 - ht, z0], [x1 + ht, y0 + ht, z1]);
         addTube([x0 - ht, y1 - ht, z0], [x0 + ht, y1 + ht, z1]);
         addTube([x1 - ht, y1 - ht, z0], [x1 + ht, y1 + ht, z1]);
+
+        // --- Center Slice Markings (at local Z=0) ---
+        const ct = 0.4; // Thickness for the center markings
+        const hct = ct / 2;
+        
+        // Outline of the center slice (at local Z=0)
+        addTube([x0, y0 - hct, -hct], [x1, y0 + hct, hct]); 
+        addTube([x0, y1 - hct, -hct], [x1, y1 + hct, hct]); 
+        addTube([x0 - hct, y0, -hct], [x0 + hct, y1, hct]); 
+        addTube([x1 - hct, y0, -hct], [x1 + hct, y1, hct]); 
+
+        // Central crosshair
+        addTube([x0, -hct, -hct], [x1, hct, hct]); // X-axis line
+        addTube([-hct, y0, -hct], [hct, y1, hct]); // Y-axis line
 
 
         const vox2mm = voxToMmFactory(vol, affine);
@@ -1970,6 +2023,58 @@
           }
       });
 
+      function updateVolumeList() {
+        if (!volumeListContainer) return;
+        volumeListContainer.innerHTML = "";
+        
+        nv.volumes.forEach((vol, index) => {
+          const row = document.createElement("div");
+          row.className = "toggle";
+          row.style.justifyContent = "space-between";
+          row.style.padding = "4px";
+          row.style.background = "rgba(255, 255, 255, 0.03)";
+          row.style.borderRadius = "4px";
+
+          const left = document.createElement("div");
+          left.style.display = "flex";
+          left.style.gap = "8px";
+          left.style.alignItems = "center";
+          left.style.overflow = "hidden";
+
+          const cb = document.createElement("input");
+          cb.type = "checkbox";
+          cb.checked = vol.opacity > 0;
+          cb.addEventListener("change", () => {
+            nv.setOpacity(index, cb.checked ? (vol.opacity === 0 ? 1.0 : vol.opacity) : 0);
+          });
+
+          const name = document.createElement("span");
+          name.textContent = vol.name || `Volume ${index + 1}`;
+          name.style.whiteSpace = "nowrap";
+          name.style.textOverflow = "ellipsis";
+          name.style.overflow = "hidden";
+          name.style.fontSize = "11px";
+
+          const removeBtn = document.createElement("button");
+          removeBtn.textContent = "×";
+          removeBtn.className = "btn";
+          removeBtn.style.padding = "0 6px";
+          removeBtn.style.height = "20px";
+          removeBtn.style.lineHeight = "18px";
+          removeBtn.style.minWidth = "auto";
+          removeBtn.onclick = () => {
+            nv.removeVolume(vol);
+            updateVolumeList();
+          };
+
+          left.appendChild(cb);
+          left.appendChild(name);
+          row.appendChild(left);
+          row.appendChild(removeBtn);
+          volumeListContainer.appendChild(row);
+        });
+      }
+
       async function loadUrl(url, name, isAdding = false) {
         try {
           btnDemo.disabled = true;
@@ -1991,20 +2096,20 @@
               cal_max: isMask ? 1.0 : undefined
             }]);
           } else {
-            await nv.loadVolumes([{ url, name: name ?? "volume" }]);
+          await nv.loadVolumes([{ url, name: name ?? "volume" }]);
           }
 
           // Initialize mm-based slider defaults/ranges based on the loaded volume (if it's the first one).
           if (!isAdding || nv.volumes.length === 1) {
-            try {
-              const info = getVolumeInfo();
-              voxelSpacingMm = estimateVoxelSpacingMm(info);
-              // "remove all this uneccesary stuff" - simplified default center logic.
-              
-              if (info.dim3) {
-                const [dx, dy, dz] = info.dim3;
-                // Convert native world units to mm for UI defaults.
-                fullFovMm = [dx * voxelSpacingMm[0], dy * voxelSpacingMm[1], dz * voxelSpacingMm[2]];
+          try {
+            const info = getVolumeInfo();
+            voxelSpacingMm = estimateVoxelSpacingMm(info);
+            // "remove all this uneccesary stuff" - simplified default center logic.
+            
+            if (info.dim3) {
+              const [dx, dy, dz] = info.dim3;
+              // Convert native world units to mm for UI defaults.
+              fullFovMm = [dx * voxelSpacingMm[0], dy * voxelSpacingMm[1], dz * voxelSpacingMm[2]];
 
                 const setRange = (el, numEl, mm, defaultVal) => {
                   el.min = numEl.min = "1";
@@ -2025,19 +2130,20 @@
                   el.max = numEl.max = String(max);
                   el.step = numEl.step = "0.1";
                   el.value = numEl.value = "0";
-                };
-                // Allow offsets up to ~half the full FOV in each axis.
+              };
+              // Allow offsets up to ~half the full FOV in each axis.
                 setOffRange(fovOffX, fovOffXVal, fullFovMm[0] / 2);
                 setOffRange(fovOffY, fovOffYVal, fullFovMm[1] / 2);
                 setOffRange(fovOffZ, fovOffZVal, fullFovMm[2] / 2);
-              }
-            } catch (e) {
-              console.warn("Failed to init FOV mm sliders; using defaults.", e);
-              voxelSpacingMm = voxelSpacingMm ?? [1, 1, 1];
+            }
+          } catch (e) {
+            console.warn("Failed to init FOV mm sliders; using defaults.", e);
+            voxelSpacingMm = voxelSpacingMm ?? [1, 1, 1];
             }
           }
           syncFovLabels();
           setFovVisible(showFov.checked);
+          updateVolumeList();
           setStatus(`loaded: ${name ?? url}`);
         } catch (e) {
           console.error(e);

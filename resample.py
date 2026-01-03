@@ -68,7 +68,7 @@ def load_nifti(path):
         raise e
 
 
-def resample_to_reference(source_img, reference_img, order=1):
+def resample_to_reference(source_img, reference_img, order=3):
     """
     Resample source image to match reference image's grid.
     
