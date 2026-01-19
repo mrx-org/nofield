@@ -51,6 +51,7 @@ def seq_plot(
         grad_colors = [None, None, None]
     
     mpl.rcParams['lines.linewidth'] = 0.6
+    mpl.rcParams['font.size'] = 8
     mpl.rcParams['path.simplify'] = True
     mpl.rcParams['path.simplify_threshold'] = 1.0
     
@@ -75,7 +76,7 @@ def seq_plot(
         raise ValueError('Unsupported gradient unit')
     
     # Create a single figure with 6 subplots
-    fig = plt.figure(figsize=(8, 6.3))
+    fig = plt.figure(figsize=(8, 5.6))
     sp1 = fig.add_subplot(611) # ADC
     sp2 = fig.add_subplot(612, sharex=sp1) # RF Mag
     sp3 = fig.add_subplot(613, sharex=sp1) # RF/ADC Phase

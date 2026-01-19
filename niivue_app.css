@@ -50,12 +50,15 @@
   overflow: auto;
 }
 
-.niivue-app .panel h1 {
-  font-size: 14px;
+.niivue-app .panel h1, .niivue-app .section-title {
+  font-size: 0.9rem;
+  font-weight: 600;
   margin: 0 0 10px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--accent);
+  display: flex;
+  align-items: center;
 }
 
 .niivue-app .row {
@@ -75,11 +78,22 @@
   padding: 8px 10px;
   cursor: pointer;
   font-size: 12px;
+  font-weight: 500;
+  transition: all 0.2s ease;
 }
 
 .niivue-app .btn.primary {
   background: var(--accent);
   border-color: rgba(0, 0, 0, 0.15);
+  color: white;
+}
+
+.niivue-app .btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.niivue-app .btn.primary:hover:not(:disabled) {
+  background: #2563eb;
 }
 
 .niivue-app .btn:disabled {

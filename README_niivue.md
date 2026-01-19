@@ -23,4 +23,3 @@ Then open `http://localhost:8000` in your browser.
 - Niivue is imported from the CDN `unpkg` (`@niivue/niivue@0.65.0`).
 - If you want a **React/Vite** version instead, tell me and I’ll scaffold it (that will require `npm install`, i.e. downloading packages).
 
-

@@ -160,7 +160,7 @@ export class NiivueModule {
   _getPanelSourceHtml() {
     return `
         <div class="panel">
-          <h1>Volume Source</h1>
+          <h1 class="section-title">Volume Source</h1>
           <div class="row" style="display: flex; flex-direction: column; gap: 8px;">
             <div style="display: flex; gap: 8px;">
               <button id="btn-new-file-${this.instanceId}" class="btn primary" style="flex: 1;">New File</button>
@@ -204,7 +204,7 @@ export class NiivueModule {
   _getPanelViewHtml() {
     return `
         <div class="panel">
-          <h1>View Options</h1>
+          <h1 class="section-title">View Options</h1>
           <div class="row" style="grid-template-columns: 1fr 1fr; gap: 4px;">
             <label class="toggle"><input id="showFov-${this.instanceId}" type="checkbox" checked /> FOV Box</label>
             <label class="toggle"><input id="sliceMM-${this.instanceId}" type="checkbox" /> Slice MM</label>
@@ -233,7 +233,7 @@ export class NiivueModule {
   _getPanelFovHtml() {
     return `
         <div class="panel">
-          <h1>FOV Parameters</h1>
+          <h1 class="section-title">FOV Protocol</h1>
           <div class="sliderGroup" id="fovControls-${this.instanceId}">
             <div class="sliderRow">
               <div>Size X (mm)</div>
@@ -306,7 +306,7 @@ export class NiivueModule {
   _getPanelExportHtml() {
     return `
         <div class="panel">
-          <h1>Export & Mask</h1>
+          <h1 class="section-title">Export & Mask</h1>
           <div class="sliderGroup">
             <div class="sliderRow">
               <div>Mask X</div>

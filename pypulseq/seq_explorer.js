@@ -81,12 +81,12 @@ export class SequenceExplorer {
             <div id="seq-params-section">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
                     <div>
-                        <h3 style="font-size: 0.9rem; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: 0.05em; margin: 0;">Parameters</h3>
+                        <h3 class="section-title" style="margin: 0;">Protocol</h3>
                         <div id="seq-current-name" style="font-size: 0.7rem; color: var(--muted); margin-top: 0.25rem; cursor: help;" title=""></div>
                     </div>
                     <div style="display: flex; gap: 0.5rem; align-items: center;">
-                        <button id="seq-edit-btn" style="padding: 0.4rem 0.32rem; background: rgba(255, 255, 255, 0.1); color: var(--text, #ddd); border: 1px solid var(--border, #333); border-radius: 4px; cursor: pointer; font-size: 0.875rem; font-weight: 500;">edit seq</button>
-                        <button id="seq-execute-btn" style="padding: 0.4rem 0.32rem; background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.875rem; font-weight: 500;">plot seq</button>
+                        <button id="seq-edit-btn" class="btn">edit seq</button>
+                        <button id="seq-execute-btn" class="btn primary">plot seq</button>
                     </div>
                 </div>
                 <div id="seq-error-display" style="display: none; margin-bottom: 0.75rem; padding: 0.5rem 0.75rem; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.5); border-radius: 4px; color: #ef4444; font-size: 0.8rem; word-break: break-word;"></div>
@@ -164,13 +164,13 @@ export class SequenceExplorer {
         ` : '';
         
         const refreshHtml = this.config.showRefresh ? `
-            <button id="seq-refresh-btn" style="padding: 0.4rem 0.8rem; background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.875rem;">
+            <button id="seq-refresh-btn" class="btn primary">
                 Refresh
             </button>
         ` : '';
         
         const addSourcesHtml = `
-            <button id="seq-add-sources-btn" style="padding: 0.4rem 0.8rem; background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.875rem; margin-left: 0.5rem;">
+            <button id="seq-add-sources-btn" class="btn primary" style="margin-left: 0.5rem;">
                 Add Sources
             </button>
         `;
@@ -191,7 +191,7 @@ export class SequenceExplorer {
                 <div class="seq-explorer-left-pane">
                     <div id="seq-explorer-section">
                         <div style="margin-bottom: 0.5rem;">
-                            <h3 style="font-size: 0.9rem; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: 0.05em; margin: 0;">Explorer</h3>
+                            <h3 class="section-title" style="margin: 0;">Sequences</h3>
                         </div>
                         <div class="seq-explorer-controls">
                             ${filterHtml}
@@ -206,7 +206,7 @@ export class SequenceExplorer {
                     <div id="seq-params-section">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
                             <div>
-                                <h3 style="font-size: 0.9rem; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: 0.05em; margin: 0;">Parameters</h3>
+                            <h3 class="section-title" style="margin: 0;">Protocol</h3>
                                 <div id="seq-current-name" style="font-size: 0.7rem; color: var(--muted); margin-top: 0.25rem; cursor: help;" title=""></div>
                             </div>
                             <div style="display: flex; gap: 0.5rem; align-items: center;">
@@ -218,7 +218,7 @@ export class SequenceExplorer {
                         <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.75rem; padding-top: 0.5rem; border-top: 1px solid var(--border);">
                             <label style="display: flex; align-items: center; cursor: pointer; font-size: 0.875rem; color: var(--text);">
                                 <input type="checkbox" id="seq-dark-plot-checkbox" checked style="margin-right: 0.5rem; cursor: pointer; width: 1rem; height: 1rem;">
-                                <span>Dark seq plot</span>
+                                <span>Dark plot</span>
                             </label>
                             <select id="seq-plot-speed-selector" style="padding: 0.25rem; background: rgba(255, 255, 255, 0.08); border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-size: 0.75rem; cursor: pointer;">
                                 <option value="full">Full plot</option>
@@ -232,7 +232,7 @@ export class SequenceExplorer {
                 </div>
             </div>
             <div id="seq-console-section" class="console-section">
-                <h2 class="section-title" style="font-size: 0.9rem; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: 0.05em; margin: 1rem 0 0.5rem 0;">
+                <h2 class="section-title">
                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width: 1rem; height: 1rem; display: inline-block; vertical-align: middle; margin-right: 0.4rem;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
                     Console Output
                 </h2>
@@ -356,7 +356,8 @@ export class SequenceExplorer {
         if (useDarkTheme) {
             return `
 plt.rcParams.update({
-    'figure.figsize': [8, 3.5],
+    'figure.figsize': [8, 2.8],
+    'font.size': 8,
     'figure.facecolor': '#111a33',  # Match --panel color
     'axes.facecolor': '#111a33',
     'axes.edgecolor': (1.0, 1.0, 1.0, 0.12),  # Match --border (rgba normalized to 0-1)
@@ -373,7 +374,8 @@ plt.rcParams.update({
             return `
 # Reset to standard matplotlib theme
 plt.rcdefaults()
-plt.rcParams['figure.figsize'] = [8, 3.5]  # Keep figure size setting`;
+plt.rcParams['figure.figsize'] = [8, 2.8]
+plt.rcParams['font.size'] = 8`;
         }
     }
     
@@ -406,7 +408,7 @@ plt.rcParams['figure.figsize'] = [8, 3.5]  # Keep figure size setting`;
         
         this.consoleTarget.innerHTML = `
             <div id="seq-console-section" class="console-section visible">
-                <h2 class="section-title" style="font-size: 0.9rem; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: 0.05em; margin: 1rem 0 0.5rem 0;">
+                <h2 class="section-title">
                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width: 1rem; height: 1rem; display: inline-block; vertical-align: middle; margin-right: 0.4rem;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
                     Console Output
                 </h2>
@@ -1165,8 +1167,10 @@ json.dumps(functions)
         
         console.log('Rendering tree. Filter enabled:', this.filterSeqPrefix, 'Total sequences:', Object.keys(this.sequences).length);
         
+        const headingHtml = `<h3 class="section-title" style="margin: 0 0 0.75rem 0;">Sequences</h3>`;
+
         if (Object.keys(this.sequences).length === 0) {
-            treeEl.innerHTML = '<div style="padding: 2rem; text-align: center; color: var(--muted);">No sequences loaded</div>';
+            treeEl.innerHTML = headingHtml + '<div style="padding: 2rem; text-align: center; color: var(--muted);">No sequences loaded</div>';
             return;
         }
         
@@ -1286,7 +1290,7 @@ json.dumps(functions)
         }
         
         console.log(`Rendered ${displayedSources} sources with functions (${totalFunctions} total functions, filter: ${this.filterSeqPrefix ? 'ON' : 'OFF'})`);
-        treeEl.innerHTML = html;
+        treeEl.innerHTML = headingHtml + html;
         
         // Event listeners for source headers (collapse/expand)
         treeEl.querySelectorAll('.seq-source-header').forEach(header => {
@@ -2232,7 +2236,8 @@ result
             // Get theme code
             const themeCode = darkPlot ? `
 plt.rcParams.update({
-    'figure.figsize': [10, 5],
+    'figure.figsize': [10, 4.0],
+    'font.size': 8,
     'figure.facecolor': '#111a33',
     'axes.facecolor': '#111a33',
     'axes.edgecolor': (1.0, 1.0, 1.0, 0.12),
@@ -2246,7 +2251,8 @@ plt.rcParams.update({
     'savefig.edgecolor': '#111a33'
 })` : `
 plt.rcdefaults()
-plt.rcParams['figure.figsize'] = [10, 5]`;
+plt.rcParams['figure.figsize'] = [10, 4.0]
+plt.rcParams['font.size'] = 8`;
             
             // Build args dict from parameters
             const argsDict = {};

@@ -3,11 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MR0 Lab - Component Dashboard</title>
+    <title>No-field Scanner</title>
     
     <!-- Dependencies for Niivue App -->
     <script src="https://cdn.jsdelivr.net/pyodide/v0.29.0/full/pyodide.js"></script>
     <link rel="stylesheet" href="niivue_app.css">
+    <link rel="stylesheet" href="startup.css">
     
     <!-- Dependencies for Seq Explorer -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/codemirror.min.css">
@@ -22,6 +23,7 @@
             --panel-bg: #141b2d;
             --border: rgba(255, 255, 255, 0.12);
             --accent: #3b82f6;
+            --sidebar-width: 380px;
         }
         body, html {
             margin: 0;
@@ -74,14 +76,24 @@
             grid-template-areas:
                 "sidebar main"
                 "footer footer";
-            grid-template-columns: 380px 1fr;
+            grid-template-columns: var(--sidebar-width) 1fr;
             grid-template-rows: 1fr 320px;
             overflow: hidden;
         }
 
         #slot-sidebar { grid-area: sidebar; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); overflow-y: auto; background: var(--bg); }
         #slot-main { grid-area: main; border-bottom: 1px solid var(--border); overflow: hidden; position: relative; }
-        #slot-footer { grid-area: footer; display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--border); overflow: hidden; border-top: 1px solid var(--border); }
+        #slot-main.scrollable { overflow-y: auto; }
+        
+        #slot-footer { 
+            grid-area: footer; 
+            display: grid; 
+            grid-template-columns: calc(var(--sidebar-width) * 2) 1fr; 
+            gap: 1px; 
+            background: var(--border); 
+            overflow: hidden; 
+            border-top: 1px solid var(--border); 
+        }
         
         .footer-col { background: var(--bg); overflow-y: auto; padding: 12px; position: relative; }
         .footer-col:first-child { border-right: 1px solid var(--border); }
@@ -125,33 +137,6 @@
             display: block;
         }
 
-        /* Loading Overlay */
-        .loading-overlay {
-            position: fixed;
-            inset: 0;
-            background: var(--bg);
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            z-index: 1000;
-            transition: opacity 0.5s;
-        }
-        .loading-overlay.hidden {
-            opacity: 0;
-            pointer-events: none;
-        }
-        .spinner {
-            width: 40px;
-            height: 40px;
-            border: 4px solid rgba(59, 130, 246, 0.2);
-            border-top-color: #3b82f6;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-            margin-bottom: 12px;
-        }
-        @keyframes spin { to { transform: rotate(360deg); } }
-
         /* Module Styles Override */
         .niivue-app, .standalone-viewer, .standalone-controls {
             height: 100% !important;
@@ -167,14 +152,32 @@
 </head>
 <body>
     <div id="loader" class="loading-overlay">
-        <div class="spinner"></div>
-        <div id="loader-text">Initializing MR0 Lab...</div>
+        <div class="scene">
+            <div class="shadow-nucleus"></div>
+            <div class="shadow-floor">
+                <div class="shadow-rotator">
+                    <div class="shadow-bar">
+                        <div class="shadow-head"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="nucleus"></div>
+            <div class="z-controller">
+                <div class="arrow-pivot">
+                    <div class="stick-wrapper">
+                        <div class="shaft"></div>
+                        <div class="head"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div id="loader-text">Initializing No-field Scanner...</div>
     </div>
 
     <div class="lab-shell">
         <header>
             <div style="display: flex; align-items: center; gap: 2rem;">
-                <div style="font-weight: bold; font-size: 1.2rem;">MR0 Lab <span style="font-weight: normal; color: var(--accent);">Dashboard</span></div>
+                <div style="font-weight: bold; font-size: 1.2rem;">No-field <span style="font-weight: normal; color: var(--accent);">Scanner</span></div>
                 <div class="mode-selector">
                     <button id="btn-mode-planning" class="mode-btn active">Planning Mode</button>
                     <button id="btn-mode-sequence" class="mode-btn">Sequence Mode</button>
@@ -254,10 +257,12 @@
 
                 if (mode === 'planning') {
                     this.moveToSlot('nvViewer', 'main');
+                    this.slots.main.classList.remove('scrollable');
                     document.getElementById('btn-mode-planning').classList.add('active');
                     document.getElementById('btn-mode-sequence').classList.remove('active');
                 } else if (mode === 'sequence') {
                     this.moveToSlot('seqPlot', 'main');
+                    this.slots.main.classList.add('scrollable');
                     document.getElementById('btn-mode-planning').classList.remove('active');
                     document.getElementById('btn-mode-sequence').classList.add('active');
                 }
@@ -273,37 +278,48 @@
             const loaderText = document.getElementById('loader-text');
             
             try {
-                // 1. Initialize Pyodide
-                loaderText.textContent = "Loading Pyodide runtime...";
-                const pyodide = await loadPyodide({
-                    indexURL: "https://cdn.jsdelivr.net/pyodide/v0.29.0/full/",
-                });
-                
-                // 2. Load packages
-                loaderText.textContent = "Installing Python dependencies...";
-                await pyodide.loadPackage(['numpy', 'scipy', 'matplotlib', 'micropip']);
-                const micropip = pyodide.pyimport("micropip");
-                await micropip.install(['pypulseq', 'nibabel']);
+                // A. START PYODIDE & PACKAGES IN BACKGROUND
+                const pyodidePromise = (async () => {
+                    loaderText.textContent = "Loading Python Runtime...";
+                    const py = await loadPyodide({
+                        indexURL: "https://cdn.jsdelivr.net/pyodide/v0.29.0/full/",
+                    });
+                    await py.loadPackage(['numpy', 'scipy', 'matplotlib', 'micropip']);
+                    
+                    const micropip = py.pyimport("micropip");
+                    await micropip.install(['pypulseq', 'nibabel']);
+                    return py;
+                })();
 
-                // 3. Initialize Modules
-                loaderText.textContent = "Initializing Niivue Module...";
-                const nvModule = new NiivueModule({ pyodide });
+                // B. INITIALIZE MODULES IMMEDIATELY (Parallel to Step A)
+                loaderText.textContent = "Initializing UI...";
+                const nvModule = new NiivueModule(); 
                 nvModule.renderViewer('nv-viewer-container');
-                // Use tabbed controls for the sidebar
                 nvModule.renderControls('nv-controls-container', true);
 
-                loaderText.textContent = "Initializing Sequence Explorer...";
                 const explorer = new SequenceExplorer(null, {
-                    pyodide,
                     sources: []
                 });
                 explorer.renderTree('seq-tree-container');
                 explorer.renderParams('seq-params-container');
                 explorer.renderPlot('seq-plot-container');
 
-                await explorer.installOptimizedPlotFunction();
-                await explorer.detectVersions();
-                await explorer.loadDefaultSources();
+                // C. FETCH CONFIG IN PARALLEL
+                const configPromise = explorer.getDefaultSourcesConfig();
+
+                // D. WAIT FOR PYTHON TO BE READY
+                const pyodide = await pyodidePromise;
+                nvModule.pyodide = pyodide;
+                explorer.config.pyodide = pyodide;
+
+                // E. RUN PYTHON-DEPENDENT SETUP IN PARALLEL
+                loaderText.textContent = "Finalizing Scanner...";
+                const configCode = await configPromise;
+                await Promise.all([
+                    explorer.installOptimizedPlotFunction(),
+                    explorer.detectVersions(),
+                    explorer.loadSourcesFromConfig(configCode)
+                ]);
 
                 // 4. Initialize ViewManager
                 const viewManager = new ViewManager(nvModule, explorer);
@@ -322,7 +338,7 @@
 
             } catch (e) {
                 console.error("Bootstrap failed:", e);
-                loaderText.textContent = "Error during initialization: " + e.message;
+                loaderText.textContent = "Error: " + e.message;
                 loaderText.style.color = "#ef4444";
             }
         }

@@ -47,29 +47,13 @@ body {
     margin-bottom: 1rem;
 }
 
-.panel h2 {
-    font-size: 1.1rem;
-    font-weight: 600;
-    margin-bottom: 0.75rem;
-    color: var(--accent);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    font-size: 14px;
-}
-
-/* Sequence Explorer Widget Styles */
-.seq-explorer {
-    display: flex;
-    flex-direction: column;
-}
-
-.section-title {
+.panel h2, .section-title {
     font-size: 0.9rem;
     font-weight: 600;
-    color: var(--accent);
+    margin: 0 0 10px;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    margin: 1rem 0 0.5rem 0;
+    color: var(--accent);
     display: flex;
     align-items: center;
 }
@@ -391,25 +375,42 @@ body {
     box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
 }
 
-#seq-execute-btn {
-    padding: 0.4rem 0.32rem;
-    background: var(--accent);
-    color: white;
-    border: none;
-    border-radius: 4px;
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 8px 10px;
     cursor: pointer;
-    font-size: 0.875rem;
+    font-size: 12px;
     font-weight: 500;
-    transition: background 0.2s;
+    transition: all 0.2s ease;
 }
 
-#seq-execute-btn:hover:not(:disabled) {
+.btn.primary {
+    background: var(--accent);
+    border-color: rgba(0, 0, 0, 0.15);
+    color: white;
+}
+
+.btn:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.12);
+}
+
+.btn.primary:hover:not(:disabled) {
     background: #2563eb;
 }
 
-#seq-execute-btn:disabled {
+.btn:disabled {
     opacity: 0.6;
     cursor: not-allowed;
+}
+
+#seq-execute-btn {
+    /* Kept for ID specificity if needed, but uses .btn classes now */
 }
 
 /* Code Editor Modal */
@@ -470,8 +471,8 @@ body {
     width: 100%;
     margin-bottom: 1rem;
     min-height: 400px;
-    max-height: 80vh;
-    overflow-y: auto;
+    max-height: none;
+    overflow: visible;
     border: 1px solid var(--border);
     border-radius: 8px;
     background: rgba(255, 255, 255, 0.04);
