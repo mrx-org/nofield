@@ -10,15 +10,25 @@
  *   });
  */
 
+import { eventHub } from "../event_hub.js";
+
 export class SequenceExplorer {
     constructor(containerId, config = {}) {
         this.container = typeof containerId === 'string' 
             ? document.getElementById(containerId) 
             : containerId;
         
-        if (!this.container) {
+        // If containerId is provided but not found, throw error.
+        // If containerId is null, we assume modular rendering via renderTree/Params/Plot.
+        if (containerId !== null && !this.container) {
             throw new Error(`Container not found: ${containerId}`);
         }
+
+        // Module slots
+        this.treeTarget = null;
+        this.paramsTarget = null;
+        this.plotTarget = null;
+        this.consoleTarget = null;
         
         // Determine base path from the module URL
         const moduleUrl = import.meta.url;
@@ -43,11 +53,96 @@ export class SequenceExplorer {
         this.installedPackages = new Set(); // Track installed packages to avoid reinstalling
         
         // Initialize UI
-        this.render();
+        if (containerId) {
+            this.render();
+        }
         
         // Load sequences if sources are provided
         if (this.config.sources.length > 0) {
             this.loadSequences();
+        }
+
+        // Shared state bus
+        eventHub.on('fov_changed', (data) => {
+            const fovParams = ['fov_x', 'fov_y', 'fov_z', 'off_x', 'off_y', 'off_z', 'rot_x', 'rot_y', 'rot_z'];
+            fovParams.forEach(p => {
+                if (data[p] !== undefined) {
+                    this.updateParamValue(p, data[p]);
+                }
+            });
+        });
+    }
+
+    renderParams(target) {
+        this.paramsTarget = typeof target === 'string' ? document.getElementById(target) : target;
+        if (!this.paramsTarget) throw new Error(`Params target not found: ${target}`);
+        
+        this.paramsTarget.innerHTML = `
+            <div id="seq-params-section">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                    <div>
+                        <h3 style="font-size: 0.9rem; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: 0.05em; margin: 0;">Parameters</h3>
+                        <div id="seq-current-name" style="font-size: 0.7rem; color: var(--muted); margin-top: 0.25rem; cursor: help;" title=""></div>
+                    </div>
+                    <div style="display: flex; gap: 0.5rem; align-items: center;">
+                        <button id="seq-edit-btn" style="padding: 0.4rem 0.32rem; background: rgba(255, 255, 255, 0.1); color: var(--text, #ddd); border: 1px solid var(--border, #333); border-radius: 4px; cursor: pointer; font-size: 0.875rem; font-weight: 500;">edit seq</button>
+                        <button id="seq-execute-btn" style="padding: 0.4rem 0.32rem; background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.875rem; font-weight: 500;">plot seq</button>
+                    </div>
+                </div>
+                <div id="seq-error-display" style="display: none; margin-bottom: 0.75rem; padding: 0.5rem 0.75rem; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.5); border-radius: 4px; color: #ef4444; font-size: 0.8rem; word-break: break-word;"></div>
+                <div id="seq-params-controls"></div>
+            </div>
+        `;
+
+        // Bind events for the buttons in params section
+        const executeBtn = this.paramsTarget.querySelector('#seq-execute-btn');
+        if (executeBtn) {
+            executeBtn.addEventListener('click', () => this.executeFunction());
+        }
+        const editBtn = this.paramsTarget.querySelector('#seq-edit-btn');
+        if (editBtn) {
+            editBtn.addEventListener('click', () => this.showCodeEditor());
+        }
+    }
+
+    renderPlot(target) {
+        this.plotTarget = typeof target === 'string' ? document.getElementById(target) : target;
+        if (!this.plotTarget) throw new Error(`Plot target not found: ${target}`);
+        
+        this.plotTarget.innerHTML = `
+            <div id="seq-plot-output" class="seq-plot-container">
+                <div id="seq-mpl-actual-target" class="mpl-figure-container">
+                </div>
+            </div>
+            <div style="display: flex; align-items: center; justify-content: flex-end; margin-top: 0.5rem; padding: 0.5rem; background: rgba(0,0,0,0.2); border-radius: 4px;">
+                <label style="display: flex; align-items: center; cursor: pointer; font-size: 0.875rem; color: var(--text); margin-right: 1rem;">
+                    <input type="checkbox" id="seq-dark-plot-checkbox" checked style="margin-right: 0.5rem; cursor: pointer; width: 1rem; height: 1rem;">
+                    <span>Dark plot</span>
+                </label>
+                <select id="seq-plot-speed-selector" style="padding: 0.25rem; background: rgba(255, 255, 255, 0.08); border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-size: 0.75rem; cursor: pointer;">
+                    <option value="full">Full plot</option>
+                    <option value="fast">Fast plot</option>
+                    <option value="faster" selected>Faster plot</option>
+                </select>
+            </div>
+        `;
+
+        // Initialize plotting infrastructure for this target
+        this.initPlottingInfrastructure();
+    }
+
+    updateParamValue(name, value) {
+        // Try to find the input in paramsTarget first, then fall back to container
+        const root = this.paramsTarget || this.container;
+        const input = root.querySelector(`#seq-param-${name}`);
+        if (input) {
+            if (input.type === 'checkbox') {
+                input.checked = !!value;
+            } else {
+                input.value = value;
+            }
+            // Trigger input event to ensure any internal state is updated
+            input.dispatchEvent(new Event('input'));
         }
     }
     
@@ -222,13 +317,14 @@ export class SequenceExplorer {
     }
     
     initPlottingInfrastructure() {
+        const root = this.plotTarget || this.container;
         // Set up MutationObserver to catch matplotlib figures
         if (!this.plotObserver) {
             this.plotObserver = new MutationObserver((mutations) => {
                 mutations.forEach((mutation) => {
                     mutation.addedNodes.forEach((node) => {
                         if (node.nodeType === 1) { // Element
-                            const container = this.container.querySelector('#seq-mpl-actual-target');
+                            const container = root.querySelector('#seq-mpl-actual-target');
                             if (!container) return;
 
                             // Check if this node or any of its children is a matplotlib canvas
@@ -253,7 +349,8 @@ export class SequenceExplorer {
     }
     
     getMatplotlibThemeCode() {
-        const darkPlotCheckbox = this.container.querySelector('#seq-dark-plot-checkbox');
+        const root = this.plotTarget || this.container;
+        const darkPlotCheckbox = root ? root.querySelector('#seq-dark-plot-checkbox') : null;
         const useDarkTheme = darkPlotCheckbox ? darkPlotCheckbox.checked : true;
         
         if (useDarkTheme) {
@@ -303,16 +400,42 @@ plt.rcParams['figure.figsize'] = [8, 3.5]  # Keep figure size setting`;
         }
     }
     
+    renderConsole(target) {
+        this.consoleTarget = typeof target === 'string' ? document.getElementById(target) : target;
+        if (!this.consoleTarget) throw new Error(`Console target not found: ${target}`);
+        
+        this.consoleTarget.innerHTML = `
+            <div id="seq-console-section" class="console-section visible">
+                <h2 class="section-title" style="font-size: 0.9rem; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: 0.05em; margin: 1rem 0 0.5rem 0;">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width: 1rem; height: 1rem; display: inline-block; vertical-align: middle; margin-right: 0.4rem;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                    Console Output
+                </h2>
+                <div id="seq-console-output" class="console"></div>
+                <div id="seq-package-versions" class="versions">
+                    <span><strong>Pyodide:</strong> <span id="seq-pyodide-version">loading...</span></span>
+                    <span><strong>NumPy:</strong> <span id="seq-numpy-version">loading...</span></span>
+                    <span><strong>Matplotlib:</strong> <span id="seq-matplotlib-version">loading...</span></span>
+                    <span><strong>PyPulseq:</strong> <span id="seq-pypulseq-version">loading...</span></span>
+                    <span><strong>mrseq:</strong> <span id="seq-mrseq-version">loading...</span></span>
+                    <span><strong>ISMRMRD:</strong> <span id="seq-ismrmrd-version">loading...</span></span>
+                </div>
+            </div>
+        `;
+    }
+
     showStatus(message, type = 'info') {
         // Log to browser console
         const prefix = type === 'error' ? '❌' : type === 'success' ? '✅' : 'ℹ️';
         console.log(`${prefix} [${type.toUpperCase()}] ${message}`);
+        
         // Also log errors and warnings to UI console so user can see them
         if (type === 'error' || type === 'warn') {
             this.log(message, type);
         }
+        
         // Show errors in the error display above parameters
-        const errorDisplay = this.container.querySelector('#seq-error-display');
+        const root = this.paramsTarget || this.container;
+        const errorDisplay = root ? root.querySelector('#seq-error-display') : null;
         if (errorDisplay) {
             if (type === 'error') {
                 errorDisplay.textContent = message;
@@ -326,13 +449,17 @@ plt.rcParams['figure.figsize'] = [8, 3.5]  # Keep figure size setting`;
     }
     
     log(msg, type = 'info') {
-        const consoleEl = this.container.querySelector('#seq-console-output');
-        if (!consoleEl) return;
+        const root = this.consoleTarget || this.container;
+        const consoleEl = root ? root.querySelector('#seq-console-output') : null;
         
         const timestamp = new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
         const colorClass = type === 'error' ? 'error' : (type === 'warn' ? 'warn' : 'info');
-        consoleEl.innerHTML += `<div style="margin-bottom: 0.25rem;"><span class="timestamp">[${timestamp}]</span> <span class="${colorClass}">${msg}</span></div>`;
-        consoleEl.scrollTop = consoleEl.scrollHeight;
+        
+        if (consoleEl) {
+            consoleEl.innerHTML += `<div style="margin-bottom: 0.25rem;"><span class="timestamp">[${timestamp}]</span> <span class="${colorClass}">${msg}</span></div>`;
+            consoleEl.scrollTop = consoleEl.scrollHeight;
+        }
+        
         console.log(`[${type}] ${msg}`);
     }
     
@@ -409,12 +536,18 @@ json.dumps(versions)
 `);
             
             const versionData = JSON.parse(versions);
-            document.getElementById('seq-pyodide-version').textContent = versionData.pyodide || 'unknown';
-            document.getElementById('seq-numpy-version').textContent = versionData.numpy || 'unknown';
-            document.getElementById('seq-matplotlib-version').textContent = versionData.matplotlib || 'unknown';
-            document.getElementById('seq-pypulseq-version').textContent = versionData.pypulseq || 'unknown';
-            document.getElementById('seq-mrseq-version').textContent = versionData.mrseq || 'unknown';
-            document.getElementById('seq-ismrmrd-version').textContent = versionData.ismrmrd || 'unknown';
+            const root = this.consoleTarget || this.container;
+            const setVer = (id, val) => {
+                const el = root ? root.querySelector(`#${id}`) : document.getElementById(id);
+                if (el) el.textContent = val || 'unknown';
+            };
+            
+            setVer('seq-pyodide-version', versionData.pyodide);
+            setVer('seq-numpy-version', versionData.numpy);
+            setVer('seq-matplotlib-version', versionData.matplotlib);
+            setVer('seq-pypulseq-version', versionData.pypulseq);
+            setVer('seq-mrseq-version', versionData.mrseq);
+            setVer('seq-ismrmrd-version', versionData.ismrmrd);
         } catch (error) {
             console.warn('Failed to detect versions:', error);
         }
@@ -1023,8 +1156,11 @@ json.dumps(functions)
         // Don't render tree here - it will be called after all sources are loaded
     }
     
-    renderTree() {
-        const treeEl = this.container.querySelector('#seq-tree');
+    renderTree(target) {
+        if (target) {
+            this.treeTarget = typeof target === 'string' ? document.getElementById(target) : target;
+        }
+        const treeEl = this.treeTarget || this.container.querySelector('#seq-tree');
         if (!treeEl) return;
         
         console.log('Rendering tree. Filter enabled:', this.filterSeqPrefix, 'Total sequences:', Object.keys(this.sequences).length);
@@ -1206,11 +1342,14 @@ json.dumps(functions)
             return;
         }
         
-        const paramsSection = this.container.querySelector('#seq-params-section');
-        const paramsControls = this.container.querySelector('#seq-params-controls');
-        const executeBtn = this.container.querySelector('#seq-execute-btn');
-        const editBtn = this.container.querySelector('#seq-edit-btn');
-        const popBtn = this.container.querySelector('#seq-pop-btn');
+        const root = this.paramsTarget || this.container;
+        if (!root) return;
+        
+        const paramsSection = root.querySelector('#seq-params-section');
+        const paramsControls = root.querySelector('#seq-params-controls');
+        const executeBtn = root.querySelector('#seq-execute-btn');
+        const editBtn = root.querySelector('#seq-edit-btn');
+        const popBtn = root.querySelector('#seq-pop-btn');
         
         if (!paramsSection || !paramsControls || !executeBtn) return;
         
@@ -1388,7 +1527,8 @@ json.dumps(_result)
     }
     
     updateSequenceNameDisplay() {
-        const nameElement = this.container.querySelector('#seq-current-name');
+        const root = this.paramsTarget || this.container;
+        const nameElement = root.querySelector('#seq-current-name');
         if (!nameElement) return;
         
         if (!this.selectedSequence) {
@@ -1547,7 +1687,8 @@ json.dumps(_result)
     }
     
     renderParameterControls(params) {
-        const paramsControls = this.container.querySelector('#seq-params-controls');
+        const root = this.paramsTarget || this.container;
+        const paramsControls = root.querySelector('#seq-params-controls');
         if (!paramsControls) return;
         
         // Get docstring from selected sequence
@@ -1684,7 +1825,7 @@ json.dumps(_result)
         this.updateSequenceNameDisplay();
         
         // Edit button is now in the header, set up its event handler
-        const editBtn = this.container.querySelector('#seq-edit-btn');
+        const editBtn = root.querySelector('#seq-edit-btn');
         if (editBtn) {
             editBtn.onclick = () => this.showCodeEditor();
             editBtn.onmouseover = () => {
@@ -1702,14 +1843,17 @@ json.dumps(_result)
             return;
         }
         
-        const executeBtn = this.container.querySelector('#seq-execute-btn');
+        const paramsRoot = this.paramsTarget || this.container;
+        const plotRoot = this.plotTarget || this.container;
+        
+        const executeBtn = paramsRoot.querySelector('#seq-execute-btn');
         if (!executeBtn) return;
         
         executeBtn.disabled = true;
         executeBtn.textContent = 'Plotting...';
         
         // Clear any previous error display
-        const errorDisplay = this.container.querySelector('#seq-error-display');
+        const errorDisplay = paramsRoot.querySelector('#seq-error-display');
         if (errorDisplay) {
             errorDisplay.style.display = 'none';
             errorDisplay.textContent = '';
@@ -1720,8 +1864,8 @@ json.dumps(_result)
             const { fileName, functionName, source } = this.selectedSequence;
             
             // Clear plot container and set up matplotlib target
-            const plotOutput = this.container.querySelector('#seq-plot-output');
-            let plotContainer = this.container.querySelector('#seq-mpl-actual-target');
+            const plotOutput = plotRoot.querySelector('#seq-plot-output');
+            let plotContainer = plotRoot.querySelector('#seq-mpl-actual-target');
             
             // Create container if it doesn't exist
             if (!plotContainer && plotOutput) {
@@ -1750,7 +1894,7 @@ json.dumps(_result)
             }
             
             // Get plot speed
-            const plotSpeedSelector = this.container.querySelector('#seq-plot-speed-selector');
+            const plotSpeedSelector = plotRoot.querySelector('#seq-plot-speed-selector');
             const plotSpeed = plotSpeedSelector ? plotSpeedSelector.value : 'faster';
             
             // Get theme code
@@ -1760,7 +1904,7 @@ json.dumps(_result)
             const argsDict = {};
             if (this.functionParams) {
                 this.functionParams.forEach(param => {
-                    const input = this.container.querySelector(`#seq-param-${param.name}`);
+                    const input = paramsRoot.querySelector(`#seq-param-${param.name}`);
                     if (!input) return;
                     
                     let valExpr;
@@ -1923,11 +2067,11 @@ result
             // Final sweep for any matplotlib figures that might have been created outside our container
             setTimeout(() => {
                 // Re-query the container since it may have been recreated
-                const currentPlotContainer = this.container.querySelector('#seq-mpl-actual-target');
+                const currentPlotContainer = plotRoot.querySelector('#seq-mpl-actual-target');
                 if (currentPlotContainer) {
                     // Check for matplotlib elements that ended up outside our container
                     document.querySelectorAll('div.ui-dialog, div[id^="matplotlib_"]').forEach(el => {
-                        if (!currentPlotContainer.contains(el) && el !== currentPlotContainer && !this.container.contains(el)) {
+                        if (!currentPlotContainer.contains(el) && el !== currentPlotContainer && !plotRoot.contains(el)) {
                             console.log('Manual sweep: Found plot container outside target, moving it...');
                             currentPlotContainer.appendChild(el);
                         }
@@ -1966,6 +2110,9 @@ result
             console.warn('No function selected or Pyodide not available');
             return;
         }
+
+        const paramsRoot = this.paramsTarget || this.container;
+        const plotRoot = this.plotTarget || this.container;
         
         const { fileName, functionName, source } = this.selectedSequence;
         
@@ -2022,8 +2169,11 @@ result
         closeBtn.style.cssText = 'padding: 0.4rem 0.8rem; background: #555; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.875rem;';
         closeBtn.onclick = () => {
             // Clean up matplotlib target
-            document.pyodideMplTarget = this.container.querySelector('#seq-plot-output');
-            window.pyodideMplTarget = this.container.querySelector('#seq-plot-output');
+            const plotOutput = plotRoot ? plotRoot.querySelector('#seq-plot-output') : null;
+            if (plotOutput) {
+                document.pyodideMplTarget = plotOutput;
+                window.pyodideMplTarget = plotOutput;
+            }
             modal.remove();
         };
         header.appendChild(closeBtn);
@@ -2059,8 +2209,11 @@ result
         // Close modal when clicking outside
         modal.addEventListener('click', (e) => {
             if (e.target === modal) {
-                document.pyodideMplTarget = this.container.querySelector('#seq-plot-output');
-                window.pyodideMplTarget = this.container.querySelector('#seq-plot-output');
+                const plotOutput = plotRoot ? plotRoot.querySelector('#seq-plot-output') : null;
+                if (plotOutput) {
+                    document.pyodideMplTarget = plotOutput;
+                    window.pyodideMplTarget = plotOutput;
+                }
                 modal.remove();
             }
         });
@@ -2071,8 +2224,10 @@ result
         
         try {
             const pyodide = this.config.pyodide;
-            const plotSpeed = this.container.querySelector('#seq-plot-speed-selector')?.value || 'faster';
-            const darkPlot = this.container.querySelector('#seq-dark-plot-checkbox')?.checked ?? true;
+            const plotSpeedSelector = plotRoot ? plotRoot.querySelector('#seq-plot-speed-selector') : null;
+            const plotSpeed = plotSpeedSelector?.value || 'faster';
+            const darkPlotCheckbox = plotRoot ? plotRoot.querySelector('#seq-dark-plot-checkbox') : null;
+            const darkPlot = darkPlotCheckbox?.checked ?? true;
             
             // Get theme code
             const themeCode = darkPlot ? `
@@ -2095,15 +2250,11 @@ plt.rcParams['figure.figsize'] = [10, 5]`;
             
             // Build args dict from parameters
             const argsDict = {};
-            const paramsControls = this.container.querySelector('#seq-params-controls');
-            if (paramsControls) {
-                const inputs = paramsControls.querySelectorAll('input, select');
-                inputs.forEach(input => {
-                    const paramName = input.id.replace('input-', '');
-                    if (!paramName) return;
-                    
-                    const param = this.selectedSequence.params?.find(p => p.name === paramName);
-                    if (!param) return;
+            const paramsControls = paramsRoot ? paramsRoot.querySelector('#seq-params-controls') : null;
+            if (paramsControls && this.functionParams) {
+                this.functionParams.forEach(param => {
+                    const input = paramsControls.querySelector(`#seq-param-${param.name}`);
+                    if (!input) return;
                     
                     let valExpr;
                     if (param.type === 'bool') {
@@ -2124,7 +2275,7 @@ plt.rcParams['figure.figsize'] = [10, 5]`;
                             valExpr = inputValue;
                         }
                     }
-                    argsDict[paramName] = valExpr;
+                    argsDict[param.name] = valExpr;
                 });
             }
             

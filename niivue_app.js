@@ -1,79 +1,224 @@
 import { Niivue, NVMesh, NVImage, SLICE_TYPE, DRAG_MODE, SHOW_RENDER } from "https://unpkg.com/@niivue/niivue@0.65.0/dist/index.js";
+import { eventHub } from "./event_hub.js";
 
-export async function initNiivueApp(containerId, options = {}) {
-  const container = typeof containerId === 'string' ? document.getElementById(containerId) : containerId;
-  if (!container) throw new Error(`Container not found: ${containerId}`);
+export class NiivueModule {
+  constructor(options = {}) {
+    this.instanceId = Math.random().toString(36).substr(2, 5);
+    this.canvasId = `gl-${Math.random().toString(36).substr(2, 9)}`;
+    this.options = options;
+    this.nv = new Niivue({ logging: false });
+    this.pyodide = options.pyodide || null;
+    
+    // State properties
+    this.fovMeshData = null;
+    this.voxelSpacingMm = null;
+    this.fullFovMm = null;
+    this.fovMesh = null;
+    this.isAddingVolume = false;
+    this.currentAxCorSag = null;
+    this.lastAzEl = null;
+    this.savedDragMode = DRAG_MODE.contrast;
+    this.isDraggingFov = false;
+    this.isRotatingFov = false;
+    this.isZooming2D = false;
+    this.zoomStartMouseY = 0;
+    this.zoomStartValue = 0;
+    this.dragStartRotation = 0;
+    this.dragStartAngle = 0;
+    this.dragStartTileIndex = -1;
+    this.dragStartMm = null;
+    this.dragStartOffsets = null;
+    this.fovUpdatePending = false;
 
-  const canvasId = `gl-${Math.random().toString(36).substr(2, 9)}`;
-  const instanceId = Math.random().toString(36).substr(2, 5);
-  
-  container.classList.add('niivue-app');
-  container.innerHTML = `
-    <div class="layout">
-      <div class="viewer">
-        <canvas id="${canvasId}"></canvas>
-        <div class="status" id="statusOverlay-${instanceId}">idle</div>
+    // Elements (will be set in render methods)
+    this.containerViewer = null;
+    this.containerControls = null;
+    this.canvas = null;
+    this.statusOverlay = null;
+    this.statusText = null;
+    this.fileInput = null;
+    this.btnDemo = null;
+    this.showFov = null;
+    this.sliceMM = null;
+    this.radiological = null;
+    this.showRender = null;
+    this.showCrosshair = null;
+    this.zoom2D = null;
+    this.zoom2DVal = null;
+    this.fovControls = null;
+    this.fovX = null;
+    this.fovY = null;
+    this.fovZ = null;
+    this.fovXVal = null;
+    this.fovYVal = null;
+    this.fovZVal = null;
+    this.fovOffX = null;
+    this.fovOffY = null;
+    this.fovOffZ = null;
+    this.fovOffXVal = null;
+    this.fovOffYVal = null;
+    this.fovOffZVal = null;
+    this.fovRotX = null;
+    this.fovRotY = null;
+    this.fovRotZ = null;
+    this.fovRotXVal = null;
+    this.fovRotYVal = null;
+    this.fovRotZVal = null;
+    this.maskX = null;
+    this.maskY = null;
+    this.maskZ = null;
+    this.maskXVal = null;
+    this.maskYVal = null;
+    this.maskZVal = null;
+    this.downloadFovMeshBtn = null;
+    this.azVal = null;
+    this.elVal = null;
+    this.voxVal = null;
+    this.mmVal = null;
+    this.locStrVal = null;
+    this.volumeListContainer = null;
+    this.btnNewFile = null;
+    this.btnAddFile = null;
+    this.resampleToFovBtn = null;
+    this.pyodideStatus = null;
+
+    this.DEMO_URL = "https://niivue.github.io/niivue-demo-images/mni152.nii.gz";
+    this.FOV_RGBA255 = new Uint8Array([255, 220, 0, 255]);
+  }
+
+  renderViewer(target) {
+    this.containerViewer = typeof target === 'string' ? document.getElementById(target) : target;
+    if (!this.containerViewer) throw new Error(`Viewer target not found: ${target}`);
+
+    this.containerViewer.classList.add('niivue-app');
+    this.containerViewer.innerHTML = `
+      <div class="viewer standalone-viewer">
+        <canvas id="${this.canvasId}"></canvas>
+        <div class="status" id="statusOverlay-${this.instanceId}">idle</div>
       </div>
+    `;
 
-      <div class="options-grid">
-        <!-- Pane 1: Load file/demo + Status + Note -->
+    this.canvas = this.containerViewer.querySelector(`#${this.canvasId}`);
+    this.statusOverlay = this.containerViewer.querySelector(`#statusOverlay-${this.instanceId}`);
+    
+    // Attach Niivue after small delay to ensure canvas is ready
+    setTimeout(() => this.initNiivue(), 10);
+  }
+
+  renderControls(target, useTabs = false) {
+    this.containerControls = typeof target === 'string' ? document.getElementById(target) : target;
+    if (!this.containerControls) throw new Error(`Controls target not found: ${target}`);
+
+    this.containerControls.classList.add('niivue-app');
+    
+    if (!useTabs) {
+      this.containerControls.innerHTML = `
+        <div class="options-grid standalone-controls">
+          ${this._getPanelSourceHtml()}
+          ${this._getPanelViewHtml()}
+          ${this._getPanelFovHtml()}
+          ${this._getPanelExportHtml()}
+        </div>
+      `;
+    } else {
+      this.containerControls.innerHTML = `
+        <div class="tabbed-controls">
+          <div class="tabs-header">
+            <button class="tab-btn active" data-tab="source">Source</button>
+            <button class="tab-btn" data-tab="view">View</button>
+            <button class="tab-btn" data-tab="fov">FOV</button>
+            <button class="tab-btn" data-tab="export">Export</button>
+          </div>
+          <div class="tabs-content">
+            <div class="tab-pane active" id="tab-source-${this.instanceId}">${this._getPanelSourceHtml()}</div>
+            <div class="tab-pane" id="tab-view-${this.instanceId}">${this._getPanelViewHtml()}</div>
+            <div class="tab-pane" id="tab-fov-${this.instanceId}">${this._getPanelFovHtml()}</div>
+            <div class="tab-pane" id="tab-export-${this.instanceId}">${this._getPanelExportHtml()}</div>
+          </div>
+        </div>
+      `;
+      
+      // Bind tab switching
+      const buttons = this.containerControls.querySelectorAll('.tab-btn');
+      const panes = this.containerControls.querySelectorAll('.tab-pane');
+      buttons.forEach(btn => {
+        btn.onclick = () => {
+          buttons.forEach(b => b.classList.remove('active'));
+          panes.forEach(p => p.classList.remove('active'));
+          btn.classList.add('active');
+          const tab = btn.dataset.tab;
+          this.containerControls.querySelector(`#tab-${tab}-${this.instanceId}`).classList.add('active');
+        };
+      });
+    }
+
+    this.bindControlElements();
+    this.setupEventListeners();
+    this.initPyodide();
+  }
+
+  _getPanelSourceHtml() {
+    return `
         <div class="panel">
           <h1>Volume Source</h1>
           <div class="row" style="display: flex; flex-direction: column; gap: 8px;">
             <div style="display: flex; gap: 8px;">
-              <button id="btn-new-file-${instanceId}" class="btn primary" style="flex: 1;">New File</button>
-              <button id="btn-add-file-${instanceId}" class="btn" style="flex: 1;">Add File</button>
-              <input id="file-${instanceId}" type="file" accept=".nii,.nii.gz,.gz" style="display: none;" />
+              <button id="btn-new-file-${this.instanceId}" class="btn primary" style="flex: 1;">New File</button>
+              <button id="btn-add-file-${this.instanceId}" class="btn" style="flex: 1;">Add File</button>
+              <input id="file-${this.instanceId}" type="file" accept=".nii,.nii.gz,.gz" style="display: none;" />
             </div>
-          <button id="load-demo-${instanceId}" class="btn primary">Load demo (MNI152)</button>
-            </div>
-          <div id="volume-list-${instanceId}" style="margin-top: 12px; display: flex; flex-direction: column; gap: 4px; max-height: 150px; overflow-y: auto; border-top: 1px solid var(--border); padding-top: 8px;">
+            <button id="load-demo-${this.instanceId}" class="btn primary">Load demo (MNI152)</button>
+          </div>
+          <div id="volume-list-${this.instanceId}" style="margin-top: 12px; display: flex; flex-direction: column; gap: 4px; max-height: 150px; overflow-y: auto; border-top: 1px solid var(--border); padding-top: 8px;">
             <!-- Volume checkboxes will be added here -->
-            </div>
+          </div>
           <div class="stateBox">
             <div class="stateRow">
               <div class="stateKey">Status</div>
-              <div class="stateVal auto-wrap" id="statusText-${instanceId}">idle</div>
+              <div class="stateVal auto-wrap" id="statusText-${this.instanceId}">idle</div>
             </div>
             <div class="stateRow">
               <div class="stateKey">Rotation</div>
-              <div class="stateVal">az=<span id="azVal-${instanceId}">—</span>°, el=<span id="elVal-${instanceId}">—</span>°</div>
+              <div class="stateVal">az=<span id="azVal-${this.instanceId}">—</span>°, el=<span id="elVal-${this.instanceId}">—</span>°</div>
             </div>
             <div class="stateRow">
               <div class="stateKey">Slices (vox)</div>
-              <div class="stateVal"><span id="voxVal-${instanceId}">—</span></div>
+              <div class="stateVal"><span id="voxVal-${this.instanceId}">—</span></div>
             </div>
             <div class="stateRow">
               <div class="stateKey">Location (mm)</div>
-              <div class="stateVal"><span id="mmVal-${instanceId}">—</span></div>
+              <div class="stateVal"><span id="mmVal-${this.instanceId}">—</span></div>
             </div>
           </div>
           <div class="kv">
             <div><strong>Note:</strong> Niivue via CDN (unpkg).</div>
             <div style="border-top: 1px solid var(--border); margin-top: 4px; padding-top: 4px;">
               <strong>Info:</strong>
-              <div id="locStrVal-${instanceId}" class="stateVal auto-wrap" style="margin-top: 2px;">—</div>
+              <div id="locStrVal-${this.instanceId}" class="stateVal auto-wrap" style="margin-top: 2px;">—</div>
             </div>
           </div>
         </div>
+    `;
+  }
 
-        <!-- Pane 2: Checkboxes and Zoom -->
+  _getPanelViewHtml() {
+    return `
         <div class="panel">
           <h1>View Options</h1>
           <div class="row" style="grid-template-columns: 1fr 1fr; gap: 4px;">
-            <label class="toggle"><input id="showFov-${instanceId}" type="checkbox" checked /> FOV Box</label>
-            <label class="toggle"><input id="sliceMM-${instanceId}" type="checkbox" /> Slice MM</label>
-            <label class="toggle"><input id="radiological-${instanceId}" type="checkbox" /> Radio.</label>
-            <label class="toggle"><input id="showRender-${instanceId}" type="checkbox" checked /> 3D Render</label>
-            <label class="toggle"><input id="showCrosshair-${instanceId}" type="checkbox" checked /> Crosshair</label>
+            <label class="toggle"><input id="showFov-${this.instanceId}" type="checkbox" checked /> FOV Box</label>
+            <label class="toggle"><input id="sliceMM-${this.instanceId}" type="checkbox" /> Slice MM</label>
+            <label class="toggle"><input id="radiological-${this.instanceId}" type="checkbox" /> Radio.</label>
+            <label class="toggle"><input id="showRender-${this.instanceId}" type="checkbox" checked /> 3D Render</label>
+            <label class="toggle"><input id="showCrosshair-${this.instanceId}" type="checkbox" checked /> Crosshair</label>
           </div>
           <div class="sliderGroup" style="margin-top: 8px;">
             <div class="sliderRow">
               <div>Zoom 2D</div>
               <div class="input-sync">
-                <input id="zoom2DVal-${instanceId}" type="number" class="num-input" step="0.05" />
-                <input id="zoom2D-${instanceId}" type="range" min="0.2" max="2.0" step="0.05" value="0.9" />
-            </div>
+                <input id="zoom2DVal-${this.instanceId}" type="number" class="num-input" step="0.05" />
+                <input id="zoom2D-${this.instanceId}" type="range" min="0.2" max="2.0" step="0.05" value="0.9" />
+              </div>
             </div>
           </div>
           <div class="hint">
@@ -82,193 +227,275 @@ export async function initNiivueApp(containerId, options = {}) {
             Ctrl+Scroll: Resize FOV
           </div>
         </div>
+    `;
+  }
 
-        <!-- Pane 3: FOV size, offset, and rotation sliders -->
+  _getPanelFovHtml() {
+    return `
         <div class="panel">
           <h1>FOV Parameters</h1>
-          <div class="sliderGroup" id="fovControls-${instanceId}">
+          <div class="sliderGroup" id="fovControls-${this.instanceId}">
             <div class="sliderRow">
               <div>Size X (mm)</div>
               <div class="input-sync">
-                <input id="fovXVal-${instanceId}" type="number" class="num-input" step="1" />
-                <input id="fovX-${instanceId}" type="range" min="1" max="600" step="1" value="220" />
+                <input id="fovXVal-${this.instanceId}" type="number" class="num-input" step="1" />
+                <input id="fovX-${this.instanceId}" type="range" min="1" max="600" step="1" value="220" />
               </div>
             </div>
             <div class="sliderRow">
               <div>Size Y (mm)</div>
               <div class="input-sync">
-                <input id="fovYVal-${instanceId}" type="number" class="num-input" step="1" />
-                <input id="fovY-${instanceId}" type="range" min="1" max="600" step="1" value="220" />
+                <input id="fovYVal-${this.instanceId}" type="number" class="num-input" step="1" />
+                <input id="fovY-${this.instanceId}" type="range" min="1" max="600" step="1" value="220" />
               </div>
             </div>
             <div class="sliderRow">
               <div>Size Z (mm)</div>
               <div class="input-sync">
-                <input id="fovZVal-${instanceId}" type="number" class="num-input" step="1" />
-                <input id="fovZ-${instanceId}" type="range" min="1" max="600" step="1" value="100" />
+                <input id="fovZVal-${this.instanceId}" type="number" class="num-input" step="1" />
+                <input id="fovZ-${this.instanceId}" type="range" min="1" max="600" step="1" value="100" />
               </div>
             </div>
             <div class="sliderRow" style="margin-top: 2px; border-top: 1px solid var(--border); padding-top: 2px;">
               <div>Off X (mm)</div>
               <div class="input-sync">
-                <input id="fovOffXVal-${instanceId}" type="number" class="num-input" step="0.1" />
-                <input id="fovOffX-${instanceId}" type="range" min="-100" max="100" step="0.1" value="0" />
+                <input id="fovOffXVal-${this.instanceId}" type="number" class="num-input" step="0.1" />
+                <input id="fovOffX-${this.instanceId}" type="range" min="-100" max="100" step="0.1" value="0" />
               </div>
             </div>
             <div class="sliderRow">
               <div>Off Y (mm)</div>
               <div class="input-sync">
-                <input id="fovOffYVal-${instanceId}" type="number" class="num-input" step="0.1" />
-                <input id="fovOffY-${instanceId}" type="range" min="-100" max="100" step="0.1" value="0" />
+                <input id="fovOffYVal-${this.instanceId}" type="number" class="num-input" step="0.1" />
+                <input id="fovOffY-${this.instanceId}" type="range" min="-100" max="100" step="0.1" value="0" />
               </div>
             </div>
             <div class="sliderRow">
               <div>Off Z (mm)</div>
               <div class="input-sync">
-                <input id="fovOffZVal-${instanceId}" type="number" class="num-input" step="0.1" />
-                <input id="fovOffZ-${instanceId}" type="range" min="-100" max="100" step="0.1" value="0" />
+                <input id="fovOffZVal-${this.instanceId}" type="number" class="num-input" step="0.1" />
+                <input id="fovOffZ-${this.instanceId}" type="range" min="-100" max="100" step="0.1" value="0" />
               </div>
             </div>
             <div class="sliderRow" style="margin-top: 2px; border-top: 1px solid var(--border); padding-top: 2px;">
               <div>Rot X (deg)</div>
               <div class="input-sync">
-                <input id="fovRotXVal-${instanceId}" type="number" class="num-input" step="1" />
-                <input id="fovRotX-${instanceId}" type="range" min="-180" max="180" step="1" value="0" />
+                <input id="fovRotXVal-${this.instanceId}" type="number" class="num-input" step="1" />
+                <input id="fovRotX-${this.instanceId}" type="range" min="-180" max="180" step="1" value="0" />
               </div>
             </div>
             <div class="sliderRow">
               <div>Rot Y (deg)</div>
               <div class="input-sync">
-                <input id="fovRotYVal-${instanceId}" type="number" class="num-input" step="1" />
-                <input id="fovRotY-${instanceId}" type="range" min="-180" max="180" step="1" value="0" />
+                <input id="fovRotYVal-${this.instanceId}" type="number" class="num-input" step="1" />
+                <input id="fovRotY-${this.instanceId}" type="range" min="-180" max="180" step="1" value="0" />
               </div>
             </div>
             <div class="sliderRow">
               <div>Rot Z (deg)</div>
               <div class="input-sync">
-                <input id="fovRotZVal-${instanceId}" type="number" class="num-input" step="1" />
-                <input id="fovRotZ-${instanceId}" type="range" min="-180" max="180" step="1" value="0" />
+                <input id="fovRotZVal-${this.instanceId}" type="number" class="num-input" step="1" />
+                <input id="fovRotZ-${this.instanceId}" type="range" min="-180" max="180" step="1" value="0" />
+              </div>
             </div>
           </div>
         </div>
-        </div>
+    `;
+  }
 
-        <!-- Pane 4: FOV mask matrix size and Download button -->
+  _getPanelExportHtml() {
+    return `
         <div class="panel">
           <h1>Export & Mask</h1>
           <div class="sliderGroup">
             <div class="sliderRow">
               <div>Mask X</div>
               <div class="input-sync">
-                <input id="maskXVal-${instanceId}" type="number" class="num-input" step="1" />
-                <input id="maskX-${instanceId}" type="range" min="16" max="512" step="1" value="128" />
+                <input id="maskXVal-${this.instanceId}" type="number" class="num-input" step="1" />
+                <input id="maskX-${this.instanceId}" type="range" min="16" max="512" step="1" value="128" />
+              </div>
             </div>
-          </div>
             <div class="sliderRow">
               <div>Mask Y</div>
               <div class="input-sync">
-                <input id="maskYVal-${instanceId}" type="number" class="num-input" step="1" />
-                <input id="maskY-${instanceId}" type="range" min="16" max="512" step="1" value="128" />
-          </div>
-          </div>
+                <input id="maskYVal-${this.instanceId}" type="number" class="num-input" step="1" />
+                <input id="maskY-${this.instanceId}" type="range" min="16" max="512" step="1" value="128" />
+              </div>
+            </div>
             <div class="sliderRow">
               <div>Mask Z</div>
               <div class="input-sync">
-                <input id="maskZVal-${instanceId}" type="number" class="num-input" step="1" />
-                <input id="maskZ-${instanceId}" type="range" min="1" max="512" step="1" value="1" />
-          </div>
-        </div>
+                <input id="maskZVal-${this.instanceId}" type="number" class="num-input" step="1" />
+                <input id="maskZ-${this.instanceId}" type="range" min="1" max="512" step="1" value="1" />
+              </div>
+            </div>
           </div>
           <div class="row" style="margin-top: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
-            <button id="downloadFovMesh-${instanceId}" class="btn primary" type="button">
+            <button id="downloadFovMesh-${this.instanceId}" class="btn primary" type="button">
               Download FOV + NIfTI
             </button>
-            <button id="resampleToFov-${instanceId}" class="btn" type="button" disabled title="Wait for Pyodide to load...">
+            <button id="resampleToFov-${this.instanceId}" class="btn" type="button" disabled title="Wait for Pyodide to load...">
               Resample to FOV
             </button>
-        </div>
-          <div id="pyodideStatus-${instanceId}" style="font-size: 10px; color: var(--muted); margin-top: 4px; text-align: center;">
+          </div>
+          <div id="pyodideStatus-${this.instanceId}" style="font-size: 10px; color: var(--muted); margin-top: 4px; text-align: center;">
             Python (Pyodide): loading...
           </div>
+        </div>
+    `;
+  }
+
+  renderFull(container) {
+    const root = typeof container === 'string' ? document.getElementById(container) : container;
+    if (!root) throw new Error(`Full container target not found: ${container}`);
+
+    root.classList.add('niivue-app');
+    root.innerHTML = `
+      <div class="layout">
+        <div id="viewer-slot-${this.instanceId}"></div>
+        <div id="controls-slot-${this.instanceId}"></div>
       </div>
-      </div>
-    </div>
-  `;
+    `;
 
-  const qs = (id) => container.querySelector(`#${id}-${instanceId}`);
+    this.renderViewer(`viewer-slot-${this.instanceId}`);
+    this.renderControls(`controls-slot-${this.instanceId}`);
+  }
 
-  const DEMO_URL = "https://niivue.github.io/niivue-demo-images/mni152.nii.gz";
+  bindControlElements() {
+    const root = this.containerControls || document;
+    const qs = (id) => root.querySelector(`#${id}-${this.instanceId}`);
+    this.statusText = qs("statusText");
+    this.fileInput = qs("file");
+    this.btnDemo = qs("load-demo");
+    this.showFov = qs("showFov");
+    this.sliceMM = qs("sliceMM");
+    this.radiological = qs("radiological");
+    this.showRender = qs("showRender");
+    this.showCrosshair = qs("showCrosshair");
+    this.zoom2D = qs("zoom2D");
+    this.zoom2DVal = qs("zoom2DVal");
+    this.fovControls = qs("fovControls");
+    this.fovX = qs("fovX");
+    this.fovY = qs("fovY");
+    this.fovZ = qs("fovZ");
+    this.fovXVal = qs("fovXVal");
+    this.fovYVal = qs("fovYVal");
+    this.fovZVal = qs("fovZVal");
+    this.fovOffX = qs("fovOffX");
+    this.fovOffY = qs("fovOffY");
+    this.fovOffZ = qs("fovOffZ");
+    this.fovOffXVal = qs("fovOffXVal");
+    this.fovOffYVal = qs("fovOffYVal");
+    this.fovOffZVal = qs("fovOffZVal");
+    this.fovRotX = qs("fovRotX");
+    this.fovRotY = qs("fovRotY");
+    this.fovRotZ = qs("fovRotZ");
+    this.fovRotXVal = qs("fovRotXVal");
+    this.fovRotYVal = qs("fovRotYVal");
+    this.fovRotZVal = qs("fovRotZVal");
+    this.maskX = qs("maskX");
+    this.maskY = qs("maskY");
+    this.maskZ = qs("maskZ");
+    this.maskXVal = qs("maskXVal");
+    this.maskYVal = qs("maskYVal");
+    this.maskZVal = qs("maskZVal");
+    this.downloadFovMeshBtn = qs("downloadFovMesh");
+    this.azVal = qs("azVal");
+    this.elVal = qs("elVal");
+    this.voxVal = qs("voxVal");
+    this.mmVal = qs("mmVal");
+    this.locStrVal = qs("locStrVal");
+    this.volumeListContainer = qs("volume-list");
+    this.btnNewFile = qs("btn-new-file");
+    this.btnAddFile = qs("btn-add-file");
+    this.resampleToFovBtn = qs("resampleToFov");
+    this.pyodideStatus = qs("pyodideStatus");
+  }
 
-  const statusText = qs("statusText");
-  const statusOverlay = qs("statusOverlay");
-  const fileInput = qs("file");
-  const btnDemo = qs("load-demo");
-  const showFov = qs("showFov");
-  const sliceMM = qs("sliceMM");
-  const radiological = qs("radiological");
-  const showRender = qs("showRender");
-  const showCrosshair = qs("showCrosshair");
-  const zoom2D = qs("zoom2D");
-  const zoom2DVal = qs("zoom2DVal");
-  const fovControls = qs("fovControls");
-  const fovX = qs("fovX");
-  const fovY = qs("fovY");
-  const fovZ = qs("fovZ");
-  const fovXVal = qs("fovXVal");
-  const fovYVal = qs("fovYVal");
-  const fovZVal = qs("fovZVal");
-  const fovOffX = qs("fovOffX");
-  const fovOffY = qs("fovOffY");
-  const fovOffZ = qs("fovOffZ");
-  const fovOffXVal = qs("fovOffXVal");
-  const fovOffYVal = qs("fovOffYVal");
-  const fovOffZVal = qs("fovOffZVal");
-  const fovRotX = qs("fovRotX");
-  const fovRotY = qs("fovRotY");
-  const fovRotZ = qs("fovRotZ");
-  const fovRotXVal = qs("fovRotXVal");
-  const fovRotYVal = qs("fovRotYVal");
-  const fovRotZVal = qs("fovRotZVal");
-  const maskX = qs("maskX");
-  const maskY = qs("maskY");
-  const maskZ = qs("maskZ");
-  const maskXVal = qs("maskXVal");
-  const maskYVal = qs("maskYVal");
-  const maskZVal = qs("maskZVal");
-  const downloadFovMesh = qs("downloadFovMesh");
-  const azVal = qs("azVal");
-  const elVal = qs("elVal");
-  const voxVal = qs("voxVal");
-  const mmVal = qs("mmVal");
-  const locStrVal = qs("locStrVal");
-  const volumeListContainer = qs("volume-list");
-
-  const btnNewFile = qs("btn-new-file");
-  const btnAddFile = qs("btn-add-file");
-  let isAddingVolume = false;
-
-  const resampleToFovBtn = qs("resampleToFov");
-  const pyodideStatus = qs("pyodideStatus");
-  let pyodide = options.pyodide || null;
-
-  async function initPyodide() {
+  async initNiivue() {
+    if (!this.canvas) return;
+    
+    this.nv.setMultiplanarLayout(3); 
+    this.nv.opts.multiplanarShowRender = SHOW_RENDER.ALWAYS;
+    if (this.showRender) this.showRender.checked = true;
+    this.nv.scene.pan2Dxyzmm[3] = 0.9;
+    
+    this.setStatus("initializing…");
+    await this.nv.attachTo(this.canvasId);
+    
     try {
-      if (!pyodide) {
-        pyodideStatus.textContent = "Python (Pyodide): loading core...";
-        pyodide = await loadPyodide();
-        pyodideStatus.textContent = "Python (Pyodide): loading numpy/scipy...";
-        await pyodide.loadPackage(["numpy", "scipy", "micropip"]);
-        pyodideStatus.textContent = "Python (Pyodide): installing nibabel...";
-        await pyodide.runPythonAsync(`
+      this.nv.setSliceType(SLICE_TYPE.MULTIPLANAR);
+      if (this.sliceMM) this.nv.setSliceMM(this.sliceMM.checked);
+      if (this.radiological) this.radiological.checked = this.nv.getRadiologicalConvention();
+    } catch (e) {
+      console.warn("Failed to set MULTIPLANAR slice type", e);
+    }
+
+    this.nv.onAzimuthElevationChange = (azimuth, elevation) => {
+      const az = Number(azimuth);
+      const el = Number(elevation);
+      if (this.azVal && Number.isFinite(az)) this.azVal.textContent = az.toFixed(1);
+      if (this.elVal && Number.isFinite(el)) this.elVal.textContent = el.toFixed(1);
+    };
+
+    this.nv.onLocationChange = (data) => {
+      try {
+        const vox = data?.vox;
+        const mm = data?.mm;
+        const str = data?.str ?? data?.string ?? data?.text ?? null;
+        if (typeof data?.axCorSag === "number") this.currentAxCorSag = data.axCorSag;
+        
+        if (this.voxVal) {
+          if ((Array.isArray(vox) || ArrayBuffer.isView(vox)) && vox.length >= 3) {
+            this.voxVal.textContent = `${Number(vox[0]).toFixed(1)}, ${Number(vox[1]).toFixed(1)}, ${Number(vox[2]).toFixed(1)}`;
+          } else {
+            this.voxVal.textContent = "—";
+          }
+        }
+        
+        if (this.mmVal) {
+          if ((Array.isArray(mm) || ArrayBuffer.isView(mm)) && mm.length >= 3) {
+            this.mmVal.textContent = `${Number(mm[0]).toFixed(1)}, ${Number(mm[1]).toFixed(1)}, ${Number(mm[2]).toFixed(1)}`;
+          } else {
+            this.mmVal.textContent = "—";
+          }
+        }
+        
+        if (this.locStrVal) this.locStrVal.textContent = str ? String(str) : "—";
+      } catch (e) { console.warn("onLocationChange handler failed", e); }
+    };
+
+    this.canvas.addEventListener("mousedown", (e) => this.handleMouseDown(e), { capture: true });
+    window.addEventListener("mousemove", (e) => this.handleMouseMove(e));
+    window.addEventListener("mouseup", () => this.handleMouseUp());
+    this.canvas.addEventListener("wheel", (e) => this.handleWheel(e), { passive: false, capture: true });
+
+    setInterval(() => this.updateAngles(), 200);
+    this.setStatus("ready");
+  }
+
+  async initPyodide() {
+    try {
+      if (!this.pyodide) {
+        if (typeof loadPyodide === 'undefined') {
+          console.warn("loadPyodide not found. Python resampling will not be available.");
+          if (this.pyodideStatus) this.pyodideStatus.textContent = "Python (Pyodide): unavailable";
+          return;
+        }
+        if (this.pyodideStatus) this.pyodideStatus.textContent = "Python (Pyodide): loading core...";
+        this.pyodide = await loadPyodide();
+        if (this.pyodideStatus) this.pyodideStatus.textContent = "Python (Pyodide): loading numpy/scipy...";
+        await this.pyodide.loadPackage(["numpy", "scipy", "micropip"]);
+        if (this.pyodideStatus) this.pyodideStatus.textContent = "Python (Pyodide): installing nibabel...";
+        await this.pyodide.runPythonAsync(`
           import micropip
           await micropip.install('nibabel')
         `);
       } else {
-        pyodideStatus.textContent = "Python (Pyodide): ready (shared)";
+        if (this.pyodideStatus) this.pyodideStatus.textContent = "Python (Pyodide): ready (shared)";
       }
       
-      // Always inject the resampling function (even if shared, to ensure it exists in the namespace)
-      await pyodide.runPythonAsync(`
+      await this.pyodide.runPythonAsync(`
 import numpy as np
 import nibabel as nib
 from scipy.ndimage import map_coordinates
@@ -346,28 +573,74 @@ def run_resampling(source_bytes, reference_bytes):
     return out_fh.getvalue()
       `);
       
-      pyodideStatus.textContent = "Python (Pyodide): ready";
-      resampleToFovBtn.disabled = false;
-      resampleToFovBtn.title = "Resample current volume to match FOV grid";
+      if (this.pyodideStatus) this.pyodideStatus.textContent = "Python (Pyodide): ready";
+      if (this.resampleToFovBtn) {
+        this.resampleToFovBtn.disabled = false;
+        this.resampleToFovBtn.title = "Resample current volume to match FOV grid";
+      }
     } catch (e) {
       console.error(e);
-      pyodideStatus.textContent = "Python (Pyodide): error " + e.message;
+      if (this.pyodideStatus) this.pyodideStatus.textContent = "Python (Pyodide): error " + e.message;
     }
   }
-  initPyodide();
 
-  btnNewFile.addEventListener("click", () => {
-    isAddingVolume = false;
-    fileInput.click();
-  });
+  setupEventListeners() {
+    this.btnNewFile.addEventListener("click", () => {
+      this.isAddingVolume = false;
+      this.fileInput.click();
+    });
 
-  btnAddFile.addEventListener("click", () => {
-    isAddingVolume = true;
-    fileInput.click();
-  });
+    this.btnAddFile.addEventListener("click", () => {
+      this.isAddingVolume = true;
+      this.fileInput.click();
+    });
 
+    this.showFov.addEventListener("change", () => this.requestFovUpdate());
+    this.sliceMM.addEventListener("change", () => this.nv.setSliceMM(this.sliceMM.checked));
+    this.radiological.addEventListener("change", () => this.nv.setRadiologicalConvention(this.radiological.checked));
+    this.showRender.addEventListener("change", () => { 
+      this.nv.opts.multiplanarShowRender = this.showRender.checked ? SHOW_RENDER.ALWAYS : SHOW_RENDER.NEVER; 
+      this.nv.drawScene(); 
+    });
+    this.showCrosshair.addEventListener("change", () => this.nv.setCrosshairWidth(this.showCrosshair.checked ? 1 : 0));
 
-  function affineColToRowMajor(colMajor) {
+    this.bindBiDirectional(this.zoom2D, this.zoom2DVal, () => { 
+      const pan = this.nv.scene.pan2Dxyzmm; 
+      this.nv.setPan2Dxyzmm([pan[0], pan[1], pan[2], parseFloat(this.zoom2D.value)]); 
+      this.syncFovLabels(); 
+    });
+    this.bindBiDirectional(this.fovX, this.fovXVal, () => this.rebuildFovLive(true));
+    this.bindBiDirectional(this.fovY, this.fovYVal, () => this.rebuildFovLive(true));
+    this.bindBiDirectional(this.fovZ, this.fovZVal, () => this.rebuildFovLive(true));
+    this.bindBiDirectional(this.fovOffX, this.fovOffXVal, () => this.rebuildFovLive(true));
+    this.bindBiDirectional(this.fovOffY, this.fovOffYVal, () => this.rebuildFovLive(true));
+    this.bindBiDirectional(this.fovOffZ, this.fovOffZVal, () => this.rebuildFovLive(true));
+    this.bindBiDirectional(this.fovRotX, this.fovRotXVal, () => this.rebuildFovLive(true));
+    this.bindBiDirectional(this.fovRotY, this.fovRotYVal, () => this.rebuildFovLive(true));
+    this.bindBiDirectional(this.fovRotZ, this.fovRotZVal, () => this.rebuildFovLive(true));
+    this.bindBiDirectional(this.maskX, this.maskXVal, () => this.syncFovLabels());
+    this.bindBiDirectional(this.maskY, this.maskYVal, () => this.syncFovLabels());
+    this.bindBiDirectional(this.maskZ, this.maskZVal, () => this.syncFovLabels());
+    this.syncFovLabels();
+
+    this.downloadFovMeshBtn.addEventListener("click", () => this.handleDownloadFovMesh());
+    this.resampleToFovBtn.addEventListener("click", () => this.handleResampleToFov());
+    this.btnDemo.onclick = () => this.loadUrl(this.DEMO_URL, "mni152.nii.gz");
+    this.fileInput.onchange = (e) => { 
+      const f=e.target.files?.[0]; 
+      if(f){ 
+        const u=URL.createObjectURL(f); 
+        this.loadUrl(u, f.name, this.isAddingVolume).finally(()=>{ 
+          setTimeout(()=>URL.revokeObjectURL(u),30000); 
+          e.target.value=""; 
+        }); 
+      } 
+    };
+  }
+
+  // --- Logic methods (unmodified from original) ---
+
+  affineColToRowMajor(colMajor) {
       return [
           colMajor[0], colMajor[4], colMajor[8], colMajor[12],
           colMajor[1], colMajor[5], colMajor[9], colMajor[13],
@@ -376,7 +649,7 @@ def run_resampling(source_bytes, reference_bytes):
       ];
   }
 
-  function setNiftiQform(niftiBytes, affineRowMajor, qformCode = 2, sformCode = 2) {
+  setNiftiQform(niftiBytes, affineRowMajor, qformCode = 2, sformCode = 2) {
       const view = new DataView(niftiBytes.buffer, niftiBytes.byteOffset, niftiBytes.byteLength);
       const littleEndian = true;
       for (let i = 0; i < 12; i++) {
@@ -448,48 +721,18 @@ def run_resampling(source_bytes, reference_bytes):
       return niftiBytes;
   }
 
-  function setStatus(s) {
-    statusText.textContent = s;
-    statusOverlay.textContent = s;
+  setStatus(s) {
+    if (this.statusText) this.statusText.textContent = s;
+    if (this.statusOverlay) this.statusOverlay.textContent = s;
   }
 
-  const nv = new Niivue({ logging: false });
-  nv.setMultiplanarLayout(3); 
-  nv.opts.multiplanarShowRender = SHOW_RENDER.ALWAYS;
-  showRender.checked = true;
-  nv.scene.pan2Dxyzmm[3] = 0.9;
-  
-  setStatus("initializing…");
-  const canvas = container.querySelector(`#${canvasId}`);
-  if (!canvas) {
-    console.error(`Canvas element #${canvasId} not found in container:`, container);
-    throw new Error(`Required canvas element #${canvasId} missing from Niivue container.`);
-  }
-  
-  await nv.attachTo(canvasId);
-  
-  try {
-    nv.setSliceType(SLICE_TYPE.MULTIPLANAR);
-    nv.setSliceMM(sliceMM.checked);
-    radiological.checked = nv.getRadiologicalConvention();
-  } catch (e) {
-    console.warn("Failed to set MULTIPLANAR slice type", e);
-  }
-
-  nv.onAzimuthElevationChange = (azimuth, elevation) => {
-    const az = Number(azimuth);
-    const el = Number(elevation);
-    if (Number.isFinite(az)) azVal.textContent = az.toFixed(1);
-    if (Number.isFinite(el)) elVal.textContent = el.toFixed(1);
-  };
-
-  function readAnglesBestEffort() {
+  readAnglesBestEffort() {
     const candidates = [
-      [nv?.opts?.renderAzimuth, nv?.opts?.renderElevation],
-      [nv?.opts?.azimuth, nv?.opts?.elevation],
-      [nv?.scene?.renderAzimuth, nv?.scene?.renderElevation],
-      [nv?.scene?.azimuth, nv?.scene?.elevation],
-      [nv?.scene?.cameraAzimuth, nv?.scene?.cameraElevation],
+      [this.nv?.opts?.renderAzimuth, this.nv?.opts?.renderElevation],
+      [this.nv?.opts?.azimuth, this.nv?.opts?.elevation],
+      [this.nv?.scene?.renderAzimuth, this.nv?.scene?.renderElevation],
+      [this.nv?.scene?.azimuth, this.nv?.scene?.elevation],
+      [this.nv?.scene?.cameraAzimuth, this.nv?.scene?.cameraElevation],
     ];
     for (const [a, e] of candidates) {
       const az = Number(a);
@@ -499,72 +742,141 @@ def run_resampling(source_bytes, reference_bytes):
     return null;
   }
 
-  let lastAzEl = null;
-  setInterval(() => {
-    const pair = readAnglesBestEffort();
+  updateAngles() {
+    const pair = this.readAnglesBestEffort();
     if (!pair) return;
     const [az, el] = pair;
-    if (!lastAzEl || az !== lastAzEl[0] || el !== lastAzEl[1]) {
-      azVal.textContent = az.toFixed(1);
-      elVal.textContent = el.toFixed(1);
-      lastAzEl = [az, el];
+    if (!this.lastAzEl || az !== this.lastAzEl[0] || el !== this.lastAzEl[1]) {
+      if (this.azVal) this.azVal.textContent = az.toFixed(1);
+      if (this.elVal) this.elVal.textContent = el.toFixed(1);
+      this.lastAzEl = [az, el];
     }
-  }, 200);
+  }
 
-  let isDraggingFov = false;
-  let isRotatingFov = false;
-  let isZooming2D = false;
-  let zoomStartMouseY = 0;
-  let zoomStartValue = 0;
-  let dragStartRotation = 0;
-  let dragStartAngle = 0;
-  let dragStartTileIndex = -1;
-  let dragStartMm = null;
-  let dragStartOffsets = null;
-  let currentAxCorSag = null; 
-  let savedDragMode = DRAG_MODE.contrast;
+  handleMouseDown(e) {
+         if (e.button === 1) {
+            e.preventDefault();
+            this.isZooming2D = true;
+            this.zoomStartMouseY = e.clientY;
+            this.zoomStartValue = Number(this.zoom2D.value);
+            this.setStatus("Zooming 2D...");
+            return;
+         }
+         if (e.ctrlKey) {
+            e.preventDefault();
+            this.savedDragMode = this.nv.opts.dragMode;
+            this.nv.opts.dragMode = DRAG_MODE.callbackOnly;
+            if (e.button === 2) {
+                this.dragStartTileIndex = this.updateViewFromMouse(e);
+                this.isRotatingFov = true;
+                let startVal = 0;
+                if (this.currentAxCorSag === 0) startVal = Number(this.fovRotZ.value);
+                else if (this.currentAxCorSag === 1) startVal = Number(this.fovRotY.value);
+                else startVal = Number(this.fovRotX.value);
+                this.dragStartRotation = startVal;
+                this.dragStartAngle = this.getMouseAngle(e);
+                this.setStatus("Rotating FOV...");
+            } else if (e.button === 0) {
+                this.dragStartTileIndex = this.updateViewFromMouse(e);
+                this.isDraggingFov = true;
+                this.dragStartMm = this.getMouseMm(e, this.dragStartTileIndex); 
+                this.dragStartOffsets = [Number(this.fovOffX.value), Number(this.fovOffY.value), Number(this.fovOffZ.value)];
+                this.setStatus("Dragging FOV...");
+            }
+         }
+  }
 
-  nv.onLocationChange = (data) => {
-    try {
-      const vox = data?.vox;
-      const mm = data?.mm;
-      const str = data?.str ?? data?.string ?? data?.text ?? null;
-      if (typeof data?.axCorSag === "number") currentAxCorSag = data.axCorSag;
-      if ((Array.isArray(vox) || ArrayBuffer.isView(vox)) && vox.length >= 3) {
-        voxVal.textContent = `${Number(vox[0]).toFixed(1)}, ${Number(vox[1]).toFixed(1)}, ${Number(vox[2]).toFixed(1)}`;
-      } else {
-        voxVal.textContent = "—";
-      }
-      if ((Array.isArray(mm) || ArrayBuffer.isView(mm)) && mm.length >= 3) {
-        mmVal.textContent = `${Number(mm[0]).toFixed(1)}, ${Number(mm[1]).toFixed(1)}, ${Number(mm[2]).toFixed(1)}`;
-      } else {
-        mmVal.textContent = "—";
-      }
-      locStrVal.textContent = str ? String(str) : "—";
-    } catch (e) { console.warn("onLocationChange handler failed", e); }
-  };
+  handleMouseMove(e) {
+         if (this.isZooming2D) {
+            const dy = e.clientY - this.zoomStartMouseY;
+            let newVal = this.zoomStartValue - (dy / 200);
+            newVal = Math.max(0.2, Math.min(2.0, newVal));
+            this.zoom2D.value = String(newVal.toFixed(2));
+            const pan = this.nv.scene.pan2Dxyzmm;
+            this.nv.setPan2Dxyzmm([pan[0], pan[1], pan[2], newVal]);
+            this.syncFovLabels();
+            this.rebuildFovLive();
+            return;
+         }
+         if (this.isDraggingFov && this.dragStartOffsets) {
+            const currMm = this.getMouseMm(e, this.dragStartTileIndex);
+            if (currMm && this.dragStartMm) {
+               const dx = currMm[0] - this.dragStartMm[0];
+               const dy = currMm[1] - this.dragStartMm[1];
+               const dz = currMm[2] - this.dragStartMm[2];
+               this.fovOffX.value = String((this.dragStartOffsets[0] + dx).toFixed(1));
+               this.fovOffY.value = String((this.dragStartOffsets[1] + dy).toFixed(1));
+               this.fovOffZ.value = String((this.dragStartOffsets[2] + dz).toFixed(1));
+               this.rebuildFovLive();
+            }
+         } else if (this.isRotatingFov) {
+             const currAngle = this.getMouseAngle(e);
+             let deltaRad = currAngle - this.dragStartAngle;
+             while (deltaRad <= -Math.PI) deltaRad += 2 * Math.PI;
+             while (deltaRad > Math.PI) deltaRad -= 2 * Math.PI;
+             let deltaDeg = deltaRad * (180 / Math.PI);
+             if (e.shiftKey) deltaDeg *= 0.1;
+             let finalRot = this.dragStartRotation - deltaDeg;
+             const norm = (v) => {
+                 let n = v % 360;
+                 if (n > 180) n -= 360;
+                 if (n < -180) n += 360;
+                 return n;
+             };
+             if (this.currentAxCorSag === 0) this.fovRotZ.value = String(norm(finalRot).toFixed(1));
+             else if (this.currentAxCorSag === 1) this.fovRotY.value = String(norm(finalRot).toFixed(1));
+             else this.fovRotX.value = String(norm(finalRot).toFixed(1));
+             this.rebuildFovLive();
+         }
+  }
 
-  function updateViewFromMouse(e) {
-      const rect = canvas.getBoundingClientRect();
+  handleMouseUp() {
+         if (this.isZooming2D) { this.isZooming2D = false; this.setStatus("Zoom 2D finished"); this.syncFovLabels(); }
+         if (this.isDraggingFov) { this.isDraggingFov = false; this.nv.opts.dragMode = this.savedDragMode; this.setStatus("FOV Drag finished"); this.syncFovLabels(); }
+         if (this.isRotatingFov) { this.isRotatingFov = false; this.nv.opts.dragMode = this.savedDragMode; this.setStatus("FOV Rotate finished"); this.syncFovLabels(); }
+  }
+
+  handleWheel(e) {
+          if (e.ctrlKey) {
+              e.preventDefault();
+              this.updateViewFromMouse(e);
+              if (this.currentAxCorSag === null) return;
+              const delta = e.deltaY > 0 ? -10 : 10; 
+              let targetInput = null;
+              if (this.currentAxCorSag === 0) targetInput = this.fovY;
+              else if (this.currentAxCorSag === 1) targetInput = this.fovX;
+              else if (this.currentAxCorSag === 2) targetInput = this.fovZ;
+              if (targetInput) {
+                  let newVal = Number(targetInput.value) + delta;
+                  newVal = Math.max(Number(targetInput.min), Math.min(Number(targetInput.max), newVal));
+                  targetInput.value = String(newVal);
+                  this.rebuildFovLive();
+                  this.setStatus(`Resized FOV: ${newVal} mm`);
+              }
+          }
+  }
+
+  updateViewFromMouse(e) {
+      const rect = this.canvas.getBoundingClientRect();
       const dpr = window.devicePixelRatio || 1;
       const x = (e.clientX - rect.left) * dpr;
       const y = (e.clientY - rect.top) * dpr;
-      for (let i = 0; i < nv.screenSlices.length; i++) {
-          const s = nv.screenSlices[i];
+      for (let i = 0; i < this.nv.screenSlices.length; i++) {
+          const s = this.nv.screenSlices[i];
           if (!s.leftTopWidthHeight) continue;
           const [L, T, W, H] = s.leftTopWidthHeight;
           if (x >= L && x <= (L + W) && y >= T && y <= (T + H)) {
-              currentAxCorSag = s.axCorSag;
+              this.currentAxCorSag = s.axCorSag;
               return i;
           }
       }
       return -1;
   }
 
-  function getMouseMm(e, tileIndex = -1) {
-      if (!nv.volumes?.length) return null;
+  getMouseMm(e, tileIndex = -1) {
+      if (!this.nv.volumes?.length) return null;
       try {
-          const rect = canvas.getBoundingClientRect();
+          const rect = this.canvas.getBoundingClientRect();
           const x = e.clientX - rect.left;
           const y = e.clientY - rect.top;
           let frac;
@@ -572,7 +884,7 @@ def run_resampling(source_bytes, reference_bytes):
                  const dpr = window.devicePixelRatio || 1;
                  const sx = x * dpr;
                  const sy = y * dpr;
-                 const slice = nv.screenSlices[tileIndex];
+                 const slice = this.nv.screenSlices[tileIndex];
                  if (!slice || !slice.leftTopWidthHeight || slice.AxyzMxy.length < 4) return null;
                  const ltwh = slice.leftTopWidthHeight;
                  let fX = (sx - ltwh[0]) / ltwh[2];
@@ -589,151 +901,40 @@ def run_resampling(source_bytes, reference_bytes):
                  if (slice.axCorSag === 1) rasMM = [xyzMM[0], xyzMM[2], xyzMM[1]];
                  else if (slice.axCorSag === 2) rasMM = [xyzMM[2], xyzMM[0], xyzMM[1]];
                  else rasMM = xyzMM;
-                 const vol = nv.volumes[0];
-                 frac = vol.convertMM2Frac(rasMM, nv.opts.isSliceMM);
+                 const vol = this.nv.volumes[0];
+                 frac = vol.convertMM2Frac(rasMM, this.nv.opts.isSliceMM);
           } else {
-                 frac = nv.canvasPos2frac([x, y]); 
+                 frac = this.nv.canvasPos2frac([x, y]); 
           }
           if (!frac || (tileIndex < 0 && frac[0] < 0)) return null; 
-          const { vol, dim3, affine } = getVolumeInfo();
+          const { vol, dim3, affine } = this.getVolumeInfo();
           if (!dim3) return null;
           const vx = frac[0] * dim3[0];
           const vy = frac[1] * dim3[1];
           const vz = frac[2] * dim3[2];
-          const vox2mm = voxToMmFactory(vol, affine);
+          const vox2mm = this.voxToMmFactory(vol, affine);
           return vox2mm(vx, vy, vz);
       } catch(e) { return null; }
   }
 
-  function getMouseAngle(e) {
-      const frac = nv.scene.crosshairPos;
-      const tileInfo = nv.frac2canvasPosWithTile(frac, currentAxCorSag);
+  getMouseAngle(e) {
+      const frac = this.nv.scene.crosshairPos;
+      const tileInfo = this.nv.frac2canvasPosWithTile(frac, this.currentAxCorSag);
       if (!tileInfo) return 0;
       const canvasPos = tileInfo.pos;
-      const rect = canvas.getBoundingClientRect();
+      const rect = this.canvas.getBoundingClientRect();
       const dpr = window.devicePixelRatio || 1;
       const pivotX = rect.left + (canvasPos[0] / dpr);
       const pivotY = rect.top + (canvasPos[1] / dpr);
       let angle = Math.atan2(e.clientY - pivotY, e.clientX - pivotX);
-      if (currentAxCorSag === 1) angle = -angle;
-      if (radiological.checked) {
-          if (currentAxCorSag === 0 || currentAxCorSag === 1) angle = -angle;
+      if (this.currentAxCorSag === 1) angle = -angle;
+      if (this.radiological.checked) {
+          if (this.currentAxCorSag === 0 || this.currentAxCorSag === 1) angle = -angle;
       }
       return angle;
   }
 
-  canvas.addEventListener("mousedown", (e) => {
-         if (e.button === 1) {
-            e.preventDefault();
-            isZooming2D = true;
-            zoomStartMouseY = e.clientY;
-            zoomStartValue = Number(zoom2D.value);
-            setStatus("Zooming 2D...");
-            return;
-         }
-         if (e.ctrlKey) {
-            e.preventDefault();
-            savedDragMode = nv.opts.dragMode;
-            nv.opts.dragMode = DRAG_MODE.callbackOnly;
-            if (e.button === 2) {
-                dragStartTileIndex = updateViewFromMouse(e);
-                isRotatingFov = true;
-                let startVal = 0;
-                if (currentAxCorSag === 0) startVal = Number(fovRotZ.value);
-                else if (currentAxCorSag === 1) startVal = Number(fovRotY.value);
-                else startVal = Number(fovRotX.value);
-                dragStartRotation = startVal;
-                dragStartAngle = getMouseAngle(e);
-                setStatus("Rotating FOV...");
-            } else if (e.button === 0) {
-                dragStartTileIndex = updateViewFromMouse(e);
-                isDraggingFov = true;
-                dragStartMm = getMouseMm(e, dragStartTileIndex); 
-                dragStartOffsets = [Number(fovOffX.value), Number(fovOffY.value), Number(fovOffZ.value)];
-                setStatus("Dragging FOV...");
-            }
-         }
-  }, { capture: true });
-
-  window.addEventListener("mousemove", (e) => {
-         if (isZooming2D) {
-            const dy = e.clientY - zoomStartMouseY;
-            let newVal = zoomStartValue - (dy / 200);
-            newVal = Math.max(0.2, Math.min(2.0, newVal));
-            zoom2D.value = String(newVal.toFixed(2));
-            const pan = nv.scene.pan2Dxyzmm;
-            nv.setPan2Dxyzmm([pan[0], pan[1], pan[2], newVal]);
-            syncFovLabels();
-            rebuildFovLive();
-            return;
-         }
-         if (isDraggingFov && dragStartOffsets) {
-            const currMm = getMouseMm(e, dragStartTileIndex);
-            if (currMm && dragStartMm) {
-               const dx = currMm[0] - dragStartMm[0];
-               const dy = currMm[1] - dragStartMm[1];
-               const dz = currMm[2] - dragStartMm[2];
-               fovOffX.value = String((dragStartOffsets[0] + dx).toFixed(1));
-               fovOffY.value = String((dragStartOffsets[1] + dy).toFixed(1));
-               fovOffZ.value = String((dragStartOffsets[2] + dz).toFixed(1));
-               rebuildFovLive();
-            }
-         } else if (isRotatingFov) {
-             const currAngle = getMouseAngle(e);
-             let deltaRad = currAngle - dragStartAngle;
-             while (deltaRad <= -Math.PI) deltaRad += 2 * Math.PI;
-             while (deltaRad > Math.PI) deltaRad -= 2 * Math.PI;
-             let deltaDeg = deltaRad * (180 / Math.PI);
-             if (e.shiftKey) deltaDeg *= 0.1;
-             let finalRot = dragStartRotation - deltaDeg;
-             const norm = (v) => {
-                 let n = v % 360;
-                 if (n > 180) n -= 360;
-                 if (n < -180) n += 360;
-                 return n;
-             };
-             if (currentAxCorSag === 0) fovRotZ.value = String(norm(finalRot).toFixed(1));
-             else if (currentAxCorSag === 1) fovRotY.value = String(norm(finalRot).toFixed(1));
-             else fovRotX.value = String(norm(finalRot).toFixed(1));
-             rebuildFovLive();
-         }
-  });
-
-  window.addEventListener("mouseup", () => {
-         if (isZooming2D) { isZooming2D = false; setStatus("Zoom 2D finished"); syncFovLabels(); }
-         if (isDraggingFov) { isDraggingFov = false; nv.opts.dragMode = savedDragMode; setStatus("FOV Drag finished"); syncFovLabels(); }
-         if (isRotatingFov) { isRotatingFov = false; nv.opts.dragMode = savedDragMode; setStatus("FOV Rotate finished"); syncFovLabels(); }
-  });
-
-  canvas.addEventListener("wheel", (e) => {
-          if (e.ctrlKey) {
-              e.preventDefault();
-              updateViewFromMouse(e);
-              if (currentAxCorSag === null) return;
-              const delta = e.deltaY > 0 ? -10 : 10; 
-              let targetInput = null;
-              if (currentAxCorSag === 0) targetInput = fovY;
-              else if (currentAxCorSag === 1) targetInput = fovX;
-              else if (currentAxCorSag === 2) targetInput = fovZ;
-              if (targetInput) {
-                  let newVal = Number(targetInput.value) + delta;
-                  newVal = Math.max(Number(targetInput.min), Math.min(Number(targetInput.max), newVal));
-                  targetInput.value = String(newVal);
-                  rebuildFovLive();
-                  setStatus(`Resized FOV: ${newVal} mm`);
-              }
-          }
-  }, { passive: false, capture: true });
-
-  setStatus("ready");
-
-  const FOV_RGBA255 = new Uint8Array([255, 220, 0, 255]);
-  let fovMesh = null;
-  let voxelSpacingMm = null;
-  let fullFovMm = null;
-  let fovMeshData = null;
-
-  function voxelToWorldFactory(affine) {
+  voxelToWorldFactory(affine) {
     if (typeof affine === "function") {
       return (x, y, z) => {
         const out = affine(x, y, z);
@@ -754,8 +955,8 @@ def run_resampling(source_bytes, reference_bytes):
     return (x, y, z) => [x, y, z];
   }
 
-  function getVolumeInfo() {
-    const vol = nv.volumes?.[0];
+  getVolumeInfo() {
+    const vol = this.nv.volumes?.[0];
     const hdr = vol?.hdr ?? vol?.header ?? null;
     const dimRaw = hdr?.dims ?? hdr?.dim ?? vol?.dims ?? vol?.dim ?? null;
     let dim3 = null;
@@ -767,8 +968,8 @@ def run_resampling(source_bytes, reference_bytes):
     return { vol, hdr, dim3, affine };
   }
 
-  function estimateVoxelSpacingMm({ vol, hdr, dim3, affine }) {
-    const vox2world = voxelToWorldFactory(affine);
+  estimateVoxelSpacingMm({ vol, hdr, dim3, affine }) {
+    const vox2world = this.voxelToWorldFactory(affine);
     const w000 = vox2world(0, 0, 0);
     const w100 = vox2world(1, 0, 0);
     const w010 = vox2world(0, 1, 0);
@@ -783,30 +984,30 @@ def run_resampling(source_bytes, reference_bytes):
     return [sx || 1, sy || 1, sz || 1];
   }
 
-  function voxToMmFactory(vol, affine) {
+  voxToMmFactory(vol, affine) {
     if (typeof vol?.vox2mm === "function") {
       return (x, y, z) => {
         try {
           const out = vol.vox2mm([x, y, z]);
           if ((Array.isArray(out) || ArrayBuffer.isView(out)) && out.length >= 3) return [Number(out[0]), Number(out[1]), Number(out[2])];
         } catch (e) {}
-        const w = voxelToWorldFactory(affine)(x, y, z);
+          const w = this.voxelToWorldFactory(affine)(x, y, z);
         return [Number(w[0]), Number(w[1]), Number(w[2])];
       };
     }
-    return voxelToWorldFactory(affine);
+    return this.voxelToWorldFactory(affine);
   }
 
-  function getFovGeometry() {
-    const { vol, dim3, affine } = getVolumeInfo();
+  getFovGeometry() {
+    const { vol, dim3, affine } = this.getVolumeInfo();
     if (!vol || !dim3) throw new Error("No volume loaded.");
     const [dx, dy, dz] = dim3;
-    const spacing = voxelSpacingMm ?? [1, 1, 1];
+    const spacing = this.voxelSpacingMm ?? [1, 1, 1];
     const sxMm = spacing[0], syMm = spacing[1], szMm = spacing[2];
-    const fovMmX = Number(fovX.value), fovMmY = Number(fovY.value), fovMmZ = Number(fovZ.value);
-    const offMmX = Number(fovOffX.value), offMmY = Number(fovOffY.value), offMmZ = Number(fovOffZ.value);
-    const rotX = Number(fovRotX.value), rotY = Number(fovRotY.value), rotZ = Number(fovRotZ.value);
-    const fullMm = fullFovMm ?? [dx * sxMm, dy * syMm, dz * szMm];
+    const fovMmX = Number(this.fovX.value), fovMmY = Number(this.fovY.value), fovMmZ = Number(this.fovZ.value);
+    const offMmX = Number(this.fovOffX.value), offMmY = Number(this.fovOffY.value), offMmZ = Number(this.fovOffZ.value);
+    const rotX = Number(this.fovRotX.value), rotY = Number(this.fovRotY.value), rotZ = Number(this.fovRotZ.value);
+    const fullMm = this.fullFovMm ?? [dx * sxMm, dy * syMm, dz * szMm];
     const baseFOVoffsetMm = [-fullMm[0]/2, -fullMm[1]/2, -fullMm[2]/2];
     const cx = (dx-1)/2 + (offMmX + baseFOVoffsetMm[0])/sxMm;
     const cy = (dy-1)/2 + (offMmY + baseFOVoffsetMm[1])/syMm;
@@ -826,7 +1027,7 @@ def run_resampling(source_bytes, reference_bytes):
     };
     
     const dxV = fovLenVoxX / 2, dyV = fovLenVoxY / 2, dzV = fovLenVoxZ / 2;
-    const vox2mmDef = voxToMmFactory(vol, affine);
+    const vox2mmDef = this.voxToMmFactory(vol, affine);
     const fovCenterWorldDef = vox2mmDef(cx, cy, cz);
     
     const vertsVox = [], tris = [];
@@ -852,75 +1053,69 @@ def run_resampling(source_bytes, reference_bytes):
       const out = vox2mmDef(vertsVox[i], vertsVox[i+1], vertsVox[i+2]);
       vertsWorld[i] = out[0]; vertsWorld[i+1] = out[1]; vertsWorld[i+2] = out[2];
     }
-    fovMeshData = { vertsWorld, tris: new Uint32Array(tris), centerWorld: fovCenterWorldDef, sizeMm: [fovMmX, fovMmY, fovMmZ], rotationDeg: [rotX, rotY, rotZ] };
-    return fovMeshData;
+    this.fovMeshData = { vertsWorld, tris: new Uint32Array(tris), centerWorld: fovCenterWorldDef, sizeMm: [fovMmX, fovMmY, fovMmZ], rotationDeg: [rotX, rotY, rotZ] };
+    
+    // Emit FOV change event
+    eventHub.emit('fov_changed', {
+        fov_x: fovMmX,
+        fov_y: fovMmY,
+        fov_z: fovMmZ,
+        off_x: offMmX,
+        off_y: offMmY,
+        off_z: offMmZ,
+        rot_x: rotX,
+        rot_y: rotY,
+        rot_z: rotZ
+    });
+
+    return this.fovMeshData;
   }
 
-  function updateFovMesh() {
-     if (!showFov.checked || !nv.volumes?.length) { if (fovMesh) { nv.removeMesh(fovMesh); fovMesh = null; } return; }
+  updateFovMesh() {
+     if (!this.showFov.checked || !this.nv.volumes?.length) { if (this.fovMesh) { this.nv.removeMesh(this.fovMesh); this.fovMesh = null; } return; }
      try {
-        const geometry = getFovGeometry();
-        if (!fovMesh) {
-            fovMesh = new NVMesh(geometry.vertsWorld, geometry.tris, "FOV", FOV_RGBA255, 1.0, true, nv.gl);
-            nv.addMesh(fovMesh);
+        const geometry = this.getFovGeometry();
+        if (!this.fovMesh) {
+            this.fovMesh = new NVMesh(geometry.vertsWorld, geometry.tris, "FOV", this.FOV_RGBA255, 1.0, true, this.nv.gl);
+            this.nv.addMesh(this.fovMesh);
         } else {
-            fovMesh.pts = geometry.vertsWorld;
-            if (typeof fovMesh.updateMesh === 'function') fovMesh.updateMesh(nv.gl);
+            this.fovMesh.pts = geometry.vertsWorld;
+            if (typeof this.fovMesh.updateMesh === 'function') this.fovMesh.updateMesh(this.nv.gl);
         }
-        nv.drawScene();
+        this.nv.drawScene();
      } catch(e) { console.error("FOV Update failed", e); }
   }
 
-  let fovUpdatePending = false;
-  function requestFovUpdate() {
-    if (fovUpdatePending) return;
-    fovUpdatePending = true;
-    requestAnimationFrame(() => { fovUpdatePending = false; updateFovMesh(); });
+  requestFovUpdate() {
+    if (this.fovUpdatePending) return;
+    this.fovUpdatePending = true;
+    requestAnimationFrame(() => { this.fovUpdatePending = false; this.updateFovMesh(); });
   }
 
-  showFov.addEventListener("change", requestFovUpdate);
-  sliceMM.addEventListener("change", () => nv.setSliceMM(sliceMM.checked));
-  radiological.addEventListener("change", () => nv.setRadiologicalConvention(radiological.checked));
-  showRender.addEventListener("change", () => { nv.opts.multiplanarShowRender = showRender.checked ? SHOW_RENDER.ALWAYS : SHOW_RENDER.NEVER; nv.drawScene(); });
-  showCrosshair.addEventListener("change", () => nv.setCrosshairWidth(showCrosshair.checked ? 1 : 0));
-
-  function syncFovLabels() {
-    fovXVal.value = Math.round(Number(fovX.value)); fovYVal.value = Math.round(Number(fovY.value)); fovZVal.value = Math.round(Number(fovZ.value));
-    fovOffXVal.value = Number(fovOffX.value).toFixed(1); fovOffYVal.value = Number(fovOffY.value).toFixed(1); fovOffZVal.value = Number(fovOffZ.value).toFixed(1);
-    fovRotXVal.value = Math.round(Number(fovRotX.value)); fovRotYVal.value = Math.round(Number(fovRotY.value)); fovRotZVal.value = Math.round(Number(fovRotZ.value));
-    maskXVal.value = Math.round(Number(maskX.value)); maskYVal.value = Math.round(Number(maskY.value)); maskZVal.value = Math.round(Number(maskZ.value));
-    zoom2DVal.value = parseFloat(zoom2D.value).toFixed(2);
+  syncFovLabels() {
+    if (!this.fovXVal) return;
+    this.fovXVal.value = Math.round(Number(this.fovX.value)); this.fovYVal.value = Math.round(Number(this.fovY.value)); this.fovZVal.value = Math.round(Number(this.fovZ.value));
+    this.fovOffXVal.value = Number(this.fovOffX.value).toFixed(1); this.fovOffYVal.value = Number(this.fovOffY.value).toFixed(1); this.fovOffZVal.value = Number(this.fovOffZ.value).toFixed(1);
+    this.fovRotXVal.value = Math.round(Number(this.fovRotX.value)); this.fovRotYVal.value = Math.round(Number(this.fovRotY.value)); this.fovRotZVal.value = Math.round(Number(this.fovRotZ.value));
+    this.maskXVal.value = Math.round(Number(this.maskX.value)); this.maskYVal.value = Math.round(Number(this.maskY.value)); this.maskZVal.value = Math.round(Number(this.maskZ.value));
+    this.zoom2DVal.value = parseFloat(this.zoom2D.value).toFixed(2);
   }
 
-  function rebuildFovLive(forceSync = false) {
-    if (forceSync) syncFovLabels();
-    if (showFov.checked && nv.volumes?.length) requestFovUpdate();
+  rebuildFovLive(forceSync = false) {
+    if (forceSync) this.syncFovLabels();
+    if (this.showFov && this.showFov.checked && this.nv.volumes?.length) this.requestFovUpdate();
   }
 
-  function bindBiDirectional(slider, numInput, callback) {
+  bindBiDirectional(slider, numInput, callback) {
+    if (!slider || !numInput) return;
     slider.addEventListener("input", () => { numInput.value = slider.value; if (callback) callback(); });
     numInput.addEventListener("input", () => { if (numInput.value !== "") { slider.value = numInput.value; if (callback) callback(); } });
   }
 
-  bindBiDirectional(zoom2D, zoom2DVal, () => { const pan = nv.scene.pan2Dxyzmm; nv.setPan2Dxyzmm([pan[0], pan[1], pan[2], parseFloat(zoom2D.value)]); syncFovLabels(); });
-  bindBiDirectional(fovX, fovXVal, () => rebuildFovLive(true));
-  bindBiDirectional(fovY, fovYVal, () => rebuildFovLive(true));
-  bindBiDirectional(fovZ, fovZVal, () => rebuildFovLive(true));
-  bindBiDirectional(fovOffX, fovOffXVal, () => rebuildFovLive(true));
-  bindBiDirectional(fovOffY, fovOffYVal, () => rebuildFovLive(true));
-  bindBiDirectional(fovOffZ, fovOffZVal, () => rebuildFovLive(true));
-  bindBiDirectional(fovRotX, fovRotXVal, () => rebuildFovLive(true));
-  bindBiDirectional(fovRotY, fovRotYVal, () => rebuildFovLive(true));
-  bindBiDirectional(fovRotZ, fovRotZVal, () => rebuildFovLive(true));
-  bindBiDirectional(maskX, maskXVal, syncFovLabels);
-  bindBiDirectional(maskY, maskYVal, syncFovLabels);
-  bindBiDirectional(maskZ, maskZVal, syncFovLabels);
-  syncFovLabels();
-
-  function generateFovMaskNifti() {
-    const geometry = getFovGeometry();
+  generateFovMaskNifti() {
+    const geometry = this.getFovGeometry();
     const fovCenterWorld = geometry.centerWorld, fovSizeMm = geometry.sizeMm, fovRotDeg = geometry.rotationDeg;
-    const mDims = [Number(maskX.value), Number(maskY.value), Number(maskZ.value)];
+    const mDims = [Number(this.maskX.value), Number(this.maskY.value), Number(this.maskZ.value)];
     const vSpacing = [fovSizeMm[0]/mDims[0], fovSizeMm[1]/mDims[1], fovSizeMm[2]/mDims[2]];
     const toRad = (d) => (d * Math.PI) / 180;
     const rX = toRad(fovRotDeg[0]), rY = toRad(fovRotDeg[1]), rZ = toRad(fovRotDeg[2]);
@@ -932,10 +1127,10 @@ def run_resampling(source_bytes, reference_bytes):
     const affineRow = [ R[0][0]*vSpacing[0], R[0][1]*vSpacing[1], R[0][2]*vSpacing[2], rasOrigin[0], R[1][0]*vSpacing[0], R[1][1]*vSpacing[1], R[1][2]*vSpacing[2], rasOrigin[1], R[2][0]*vSpacing[0], R[2][1]*vSpacing[1], R[2][2]*vSpacing[2], rasOrigin[2], 0, 0, 0, 1 ];
     const maskData = new Uint8Array(mDims[0]*mDims[1]*mDims[2]).fill(1);
     let niftiBytes = NVImage.createNiftiArray(mDims, vSpacing, affineRow, 2, maskData);
-    return setNiftiQform(niftiBytes, affineRow, 2);
+    return this.setNiftiQform(niftiBytes, affineRow, 2);
   }
 
-  function getVolumeNifti(vol) {
+  getVolumeNifti(vol) {
     const hdr = vol.hdr ?? vol.header;
     const dims = hdr?.dims ?? hdr?.dim ?? vol.dims ?? [0,0,0,0];
     const rank = dims[0] || 3;
@@ -946,28 +1141,28 @@ def run_resampling(source_bytes, reference_bytes):
         const a = hdr.affine;
         if (Array.isArray(a)) affineRow = a.length === 16 ? [...a] : [a[0][0],a[0][1],a[0][2],a[0][3], a[1][0],a[1][1],a[1][2],a[1][3], a[2][0],a[2][1],a[2][2],a[2][3], a[3][0],a[3][1],a[3][2],a[3][3]];
     }
-    if (!affineRow) affineRow = affineColToRowMajor(vol.matRAS);
+    if (!affineRow) affineRow = this.affineColToRowMajor(vol.matRAS);
     const sx = Math.hypot(affineRow[0], affineRow[4], affineRow[8]), sy = Math.hypot(affineRow[1], affineRow[5], affineRow[9]), sz = Math.hypot(affineRow[2], affineRow[6], affineRow[10]);
     const finalPixDims = [sx, sy, sz]; for (let i=4; i<=rank; i++) finalPixDims.push(pixDims[i] || 1.0);
     let niftiBytes = NVImage.createNiftiArray(niftiDims, finalPixDims, affineRow, hdr?.datatypeCode ?? 16, vol.img);
-    return setNiftiQform(niftiBytes, affineRow, 2);
+    return this.setNiftiQform(niftiBytes, affineRow, 2);
   }
 
-  function downloadVolume(vol) {
+  downloadVolume(vol) {
     try {
-      const bytes = getVolumeNifti(vol);
+      const bytes = this.getVolumeNifti(vol);
       const url = URL.createObjectURL(new Blob([bytes], {type: "application/octet-stream"}));
       const a = document.createElement("a"); a.href = url;
       const fname = vol.name || "volume.nii"; a.download = fname.endsWith(".gz") ? fname : fname + (fname.endsWith(".nii") ? "" : ".nii");
       document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 10000);
-      setStatus(`Downloaded: ${a.download}`);
-    } catch (e) { console.error(e); setStatus(`Download error: ${e.message}`); }
+      this.setStatus(`Downloaded: ${a.download}`);
+    } catch (e) { console.error(e); this.setStatus(`Download error: ${e.message}`); }
   }
 
-  downloadFovMesh.addEventListener("click", () => {
+  handleDownloadFovMesh() {
     try {
-      if (!fovMeshData) { setStatus("No FOV data yet"); return; }
-      const geometry = fovMeshData;
+      if (!this.fovMeshData) { this.setStatus("No FOV data yet"); return; }
+      const geometry = this.fovMeshData;
       const downloadTextFile = (name, text) => { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([text])); a.download = name; a.click(); };
       const toStl = (v, t) => {
           let lines = [`solid fov`];
@@ -978,71 +1173,74 @@ def run_resampling(source_bytes, reference_bytes):
       downloadTextFile("fov-box-ras.stl", toStl(geometry.vertsWorld, geometry.tris));
       const vLps = new Float32Array(geometry.vertsWorld); for(let i=0;i<vLps.length;i+=3){ vLps[i]=-vLps[i]; vLps[i+1]=-vLps[i+1]; }
       downloadTextFile("fov-box-lps.stl", toStl(vLps, geometry.tris));
-      const maskBytes = generateFovMaskNifti();
+      const maskBytes = this.generateFovMaskNifti();
       const maskUrl = URL.createObjectURL(new Blob([maskBytes]));
       const maskLink = document.createElement("a"); maskLink.href = maskUrl; maskLink.download = "fov-mask.nii"; maskLink.click();
-      if (nv.volumes?.length) setTimeout(() => downloadVolume(nv.volumes[0]), 300);
-      setStatus("Downloading STL + mask + volume...");
-    } catch (e) { console.error(e); setStatus(`Error: ${e.message}`); }
-  });
+      if (this.nv.volumes?.length) setTimeout(() => this.downloadVolume(this.nv.volumes[0]), 300);
+      this.setStatus("Downloading STL + mask + volume...");
+    } catch (e) { console.error(e); this.setStatus(`Error: ${e.message}`); }
+  }
 
-  resampleToFovBtn.addEventListener("click", async () => {
-    if (!pyodide || !nv.volumes?.length) return;
+  async handleResampleToFov() {
+    if (!this.pyodide || !this.nv.volumes?.length) return;
     try {
-      resampleToFovBtn.disabled = true; setStatus("Resampling...");
-      const src = getVolumeNifti(nv.volumes[0]), ref = generateFovMaskNifti();
-      pyodide.globals.set("source_bytes", src); pyodide.globals.set("reference_bytes", ref);
-      let res = await pyodide.runPythonAsync(`run_resampling(source_bytes, reference_bytes)`);
+      this.resampleToFovBtn.disabled = true; this.setStatus("Resampling...");
+      const src = this.getVolumeNifti(this.nv.volumes[0]), ref = this.generateFovMaskNifti();
+      this.pyodide.globals.set("source_bytes", src); this.pyodide.globals.set("reference_bytes", ref);
+      let res = await this.pyodide.runPythonAsync(`run_resampling(source_bytes, reference_bytes)`);
       const bytes = (res && res.toJs) ? res.toJs() : res; if(res.destroy) res.destroy();
       const url = URL.createObjectURL(new Blob([bytes]));
-      const name = (nv.volumes[0].name || "vol").replace(/\.nii(\.gz)?$/, "") + "_resampled.nii";
-      await nv.addVolumesFromUrl([{ url, name, colormap: "gray", opacity: 1.0 }]);
-      updateVolumeList(); setStatus(`✓ Resampled: ${name}`);
-    } catch (e) { console.error(e); setStatus(`Error: ${e.message}`); } finally { resampleToFovBtn.disabled = false; }
-  });
+      const name = (this.nv.volumes[0].name || "vol").replace(/\.nii(\.gz)?$/, "") + "_resampled.nii";
+      await this.nv.addVolumesFromUrl([{ url, name, colormap: "gray", opacity: 1.0 }]);
+      this.updateVolumeList(); this.setStatus(`✓ Resampled: ${name}`);
+    } catch (e) { console.error(e); this.setStatus(`Error: ${e.message}`); } finally { this.resampleToFovBtn.disabled = false; }
+  }
 
-  function updateVolumeList() {
-    volumeListContainer.innerHTML = "";
-    nv.volumes.forEach((vol, index) => {
+  updateVolumeList() {
+    if (!this.volumeListContainer) return;
+    this.volumeListContainer.innerHTML = "";
+    this.nv.volumes.forEach((vol, index) => {
       const row = document.createElement("div"); row.className = "toggle"; row.style.justifyContent="space-between"; row.style.background="rgba(255,255,255,0.03)"; row.style.padding="4px"; row.style.borderRadius="4px";
       const left = document.createElement("div"); left.style.display="flex"; left.style.gap="8px"; left.style.alignItems="center"; left.style.overflow="hidden";
-      const cb = document.createElement("input"); cb.type="checkbox"; cb.checked=vol.opacity>0; cb.onchange=()=>nv.setOpacity(index, cb.checked?(vol.opacity===0?1:vol.opacity):0);
+      const cb = document.createElement("input"); cb.type="checkbox"; cb.checked=vol.opacity>0; cb.onchange=()=>this.nv.setOpacity(index, cb.checked?(vol.opacity===0?1:vol.opacity):0);
       const name = document.createElement("span"); name.textContent=vol.name||`Vol ${index+1}`; name.style.fontSize="11px"; name.style.textOverflow="ellipsis"; name.style.overflow="hidden";
       const actions = document.createElement("div"); actions.style.display="flex"; actions.style.gap="4px";
-      const dl = document.createElement("button"); dl.innerHTML="↓"; dl.className="btn"; dl.style.padding="0 6px"; dl.onclick=()=>downloadVolume(vol);
-      const rm = document.createElement("button"); rm.textContent="×"; rm.className="btn"; rm.style.padding="0 6px"; rm.onclick=()=>{nv.removeVolume(vol); updateVolumeList();};
+      const dl = document.createElement("button"); dl.innerHTML="↓"; dl.className="btn"; dl.style.padding="0 6px"; dl.onclick=()=>this.downloadVolume(vol);
+      const rm = document.createElement("button"); rm.textContent="×"; rm.className="btn"; rm.style.padding="0 6px"; rm.onclick=()=>{this.nv.removeVolume(vol); this.updateVolumeList();};
       left.appendChild(cb); left.appendChild(name); row.appendChild(left); actions.appendChild(dl); actions.appendChild(rm); row.appendChild(actions);
-      volumeListContainer.appendChild(row);
+      this.volumeListContainer.appendChild(row);
     });
   }
 
-  async function loadUrl(url, name, isAdding = false) {
+  async loadUrl(url, name, isAdding = false) {
     try {
-      setStatus(`loading: ${name??url}`);
+      this.setStatus(`loading: ${name??url}`);
       if (isAdding) {
           const isMask = name?.toLowerCase().includes("mask");
-          await nv.addVolumesFromUrl([{ url, name: name??"vol", colormap: isMask?"red":"gray", opacity: isMask?0.8:0.5, cal_min: isMask?0.5:undefined, cal_max: isMask?1:undefined }]);
+          await this.nv.addVolumesFromUrl([{ url, name: name??"vol", colormap: isMask?"red":"gray", opacity: isMask?0.8:0.5, cal_min: isMask?0.5:undefined, cal_max: isMask?1:undefined }]);
       } else {
-          await nv.loadVolumes([{ url, name: name??"vol" }]);
+          await this.nv.loadVolumes([{ url, name: name??"vol" }]);
       }
-      if (!isAdding || nv.volumes.length === 1) {
-          const info = getVolumeInfo();
-          voxelSpacingMm = estimateVoxelSpacingMm(info);
+      if (!isAdding || this.nv.volumes.length === 1) {
+          const info = this.getVolumeInfo();
+          this.voxelSpacingMm = this.estimateVoxelSpacingMm(info);
           if (info.dim3) {
               const [dx, dy, dz] = info.dim3;
-              fullFovMm = [dx*voxelSpacingMm[0], dy*voxelSpacingMm[1], dz*voxelSpacingMm[2]];
+              this.fullFovMm = [dx*this.voxelSpacingMm[0], dy*this.voxelSpacingMm[1], dz*this.voxelSpacingMm[2]];
               const sr = (s,n,mm,def) => { s.min=n.min="1"; s.max=n.max="600"; s.step=n.step="1"; s.value=n.value=def?String(def):String(Math.round(mm)); };
-              sr(fovX,fovXVal,fullFovMm[0],220); sr(fovY,fovYVal,fullFovMm[1],220); sr(fovZ,fovZVal,fullFovMm[2],100);
+              sr(this.fovX,this.fovXVal,this.fullFovMm[0],220); sr(this.fovY,this.fovYVal,this.fullFovMm[1],220); sr(this.fovZ,this.fovZVal,this.fullFovMm[2],100);
               const so = (s,n) => { s.min=n.min="-500"; s.max=n.max="500"; s.step=n.step="0.1"; s.value=n.value="0"; };
-              so(fovOffX,fovOffXVal); so(fovOffY,fovOffYVal); so(fovOffZ,fovOffZVal);
+              so(this.fovOffX,this.fovOffXVal); so(this.fovOffY,this.fovOffYVal); so(this.fovOffZ,this.fovOffZVal);
           }
       }
-      syncFovLabels(); updateFovMesh(); updateVolumeList(); setStatus(`loaded: ${name??url}`);
-    } catch (e) { setStatus(`Error: ${e.message}`); }
+      this.syncFovLabels(); this.updateFovMesh(); this.updateVolumeList(); this.setStatus(`loaded: ${name??url}`);
+    } catch (e) { this.setStatus(`Error: ${e.message}`); }
   }
+}
 
-  btnDemo.onclick = () => loadUrl(DEMO_URL, "mni152.nii.gz");
-  fileInput.onchange = (e) => { const f=e.target.files?.[0]; if(f){ const u=URL.createObjectURL(f); loadUrl(u, f.name, isAddingVolume).finally(()=>{ setTimeout(()=>URL.revokeObjectURL(u),30000); e.target.value=""; }); } };
-  
-  return { nv, loadUrl, setStatus };
+// For backward compatibility or standalone use
+export async function initNiivueApp(containerId, options = {}) {
+  const module = new NiivueModule(options);
+  module.renderFull(containerId);
+  return { nv: module.nv, loadUrl: module.loadUrl.bind(module), setStatus: module.setStatus.bind(module) };
 }
