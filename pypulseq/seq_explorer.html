@@ -101,7 +101,7 @@ print(f"Matplotlib backend: {plt.get_backend()}")
         
         // Initialize sequence explorer with empty sources - will load from config file
         explorer = new SequenceExplorer('seq-explorer-widget', {
-            onlySeqPrefix: false,
+            onlySeqPrefix: true,
             pyodide: pyodide,
             sources: [], // Start empty, will load from sources_config.py
             onSequenceSelect: (sequence) => {

@@ -421,6 +421,11 @@ class SourceManager:
         import importlib
         from types import ModuleType
         
+        # Clear last sequence to avoid stale data from previous runs
+        SourceManager._last_sequence = None
+        if hasattr(__main__, 'seq'):
+            __main__.seq = None
+        
         # Remove any mock modules that might interfere with real imports
         for module_name in ['pypulseq', 'mrseq', 'ismrmrd']:
             if module_name in sys.modules:
@@ -566,12 +571,23 @@ class SourceManager:
             # Store the result in __main__.seq if it looks like a sequence object
             # This is critical for plotting - the caller expects to find the sequence in __main__.seq
             # Use multiple approaches to ensure it's accessible from the calling context
-            if result is not None and hasattr(result, 'plot') and hasattr(result, 'check_timing'):
-                __main__.seq = result
+            
+            # Helper to check if something is a sequence
+            def is_seq(obj):
+                return obj is not None and hasattr(obj, 'plot') and hasattr(obj, 'check_timing')
+
+            seq_to_store = None
+            if is_seq(result):
+                seq_to_store = result
+            elif isinstance(result, (list, tuple)) and len(result) > 0 and is_seq(result[0]):
+                seq_to_store = result[0]
+            
+            if seq_to_store:
+                __main__.seq = seq_to_store
                 # Also store via sys.modules to ensure it's accessible
-                sys.modules['__main__'].seq = result
+                sys.modules['__main__'].seq = seq_to_store
                 # Store in a class variable that SourceManager can access
-                SourceManager._last_sequence = result
+                SourceManager._last_sequence = seq_to_store
             
             # Return result as string (for JSON serialization)
             return json.dumps({'result': 'SUCCESS', 'message': f"Function executed successfully. Result type: {type(result).__name__}"})

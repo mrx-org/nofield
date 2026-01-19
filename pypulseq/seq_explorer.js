@@ -37,7 +37,7 @@ export class SequenceExplorer {
         // Configuration
         this.config = {
             basePath: config.basePath !== undefined ? config.basePath : defaultBasePath,
-            onlySeqPrefix: config.onlySeqPrefix !== undefined ? config.onlySeqPrefix : false,
+            onlySeqPrefix: config.onlySeqPrefix !== undefined ? config.onlySeqPrefix : true,
             sources: config.sources || [],
             onSequenceSelect: config.onSequenceSelect || null,
             pyodide: config.pyodide || null,
@@ -994,14 +994,12 @@ json.dumps(all_functions)
                 }
                 
                 for (const func of functions) {
-                    if (!this.filterSeqPrefix || func.name.startsWith('seq_') || func.name === 'main') {
-                        this.sequences[fileName].functions.push({
-                            name: func.name,
-                            doc: func.doc,
-                            signature: func.signature,
-                            source: { ...source, moduleName: moduleName, fullModulePath: fullModulePath }
-                        });
-                    }
+                    this.sequences[fileName].functions.push({
+                        name: func.name,
+                        doc: func.doc,
+                        signature: func.signature,
+                        source: { ...source, moduleName: moduleName, fullModulePath: fullModulePath }
+                    });
                 }
             }
         } else {
@@ -1055,14 +1053,12 @@ get_functions_from_module('${modulePath}', '${folderPath}')
             }
             
             for (const func of functions) {
-                if (!this.filterSeqPrefix || func.name.startsWith('seq_')) {
-                    this.sequences[fileName].functions.push({
-                        name: func.name,
-                        doc: func.doc,
-                        signature: func.signature,
-                        source: source
-                    });
-                }
+                this.sequences[fileName].functions.push({
+                    name: func.name,
+                    doc: func.doc,
+                    signature: func.signature,
+                    source: source
+                });
             }
         }
         } catch (error) {
@@ -1167,10 +1163,31 @@ json.dumps(functions)
         
         console.log('Rendering tree. Filter enabled:', this.filterSeqPrefix, 'Total sequences:', Object.keys(this.sequences).length);
         
-        const headingHtml = `<h3 class="section-title" style="margin: 0 0 0.75rem 0;">Sequences</h3>`;
+        let headingHtml = `
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+                <h3 class="section-title" style="margin: 0;">Sequences</h3>
+                ${this.config.showFilter ? `
+                <label style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.75rem; color: var(--muted); cursor: pointer; user-select: none;">
+                    <input type="checkbox" id="seq-filter-checkbox" ${this.filterSeqPrefix ? 'checked' : ''} style="width: 0.8rem; height: 0.8rem; margin: 0; cursor: pointer;">
+                    <span>Only seq_ or main</span>
+                </label>
+                ` : ''}
+            </div>
+        `;
 
         if (Object.keys(this.sequences).length === 0) {
             treeEl.innerHTML = headingHtml + '<div style="padding: 2rem; text-align: center; color: var(--muted);">No sequences loaded</div>';
+            
+            // Re-bind filter event even if empty
+            if (this.config.showFilter) {
+                const checkbox = treeEl.querySelector('#seq-filter-checkbox');
+                if (checkbox) {
+                    checkbox.addEventListener('change', (e) => {
+                        this.filterSeqPrefix = e.target.checked;
+                        this.renderTree();
+                    });
+                }
+            }
             return;
         }
         
@@ -1291,6 +1308,17 @@ json.dumps(functions)
         
         console.log(`Rendered ${displayedSources} sources with functions (${totalFunctions} total functions, filter: ${this.filterSeqPrefix ? 'ON' : 'OFF'})`);
         treeEl.innerHTML = headingHtml + html;
+        
+        // Add event listener for filter checkbox
+        if (this.config.showFilter) {
+            const checkbox = treeEl.querySelector('#seq-filter-checkbox');
+            if (checkbox) {
+                checkbox.addEventListener('change', (e) => {
+                    this.filterSeqPrefix = e.target.checked;
+                    this.renderTree();
+                });
+            }
+        }
         
         // Event listeners for source headers (collapse/expand)
         treeEl.querySelectorAll('.seq-source-header').forEach(header => {
@@ -1853,6 +1881,7 @@ json.dumps(_result)
         const executeBtn = paramsRoot.querySelector('#seq-execute-btn');
         if (!executeBtn) return;
         
+        console.log('Plotting started for sequence:', this.selectedSequence.fileName);
         executeBtn.disabled = true;
         executeBtn.textContent = 'Plotting...';
         
@@ -1866,6 +1895,7 @@ json.dumps(_result)
         try {
             const pyodide = this.config.pyodide;
             const { fileName, functionName, source } = this.selectedSequence;
+            const argsDict = {};
             
             // Clear plot container and set up matplotlib target
             const plotOutput = plotRoot.querySelector('#seq-plot-output');
@@ -1905,7 +1935,6 @@ json.dumps(_result)
             const themeCode = this.getMatplotlibThemeCode();
             
             // Build arguments dictionary (Python expression strings)
-            const argsDict = {};
             if (this.functionParams) {
                 this.functionParams.forEach(param => {
                     const input = paramsRoot.querySelector(`#seq-param-${param.name}`);
@@ -1933,6 +1962,7 @@ json.dumps(_result)
                     argsDict[param.name] = valExpr;
                 });
             }
+            console.log('Arguments built:', argsDict);
             
             // Install dependencies first if specified
             if (source.dependencies && source.dependencies.length > 0) {
@@ -2228,6 +2258,7 @@ result
         
         try {
             const pyodide = this.config.pyodide;
+            const argsDict = {};
             const plotSpeedSelector = plotRoot ? plotRoot.querySelector('#seq-plot-speed-selector') : null;
             const plotSpeed = plotSpeedSelector?.value || 'faster';
             const darkPlotCheckbox = plotRoot ? plotRoot.querySelector('#seq-dark-plot-checkbox') : null;
@@ -2255,7 +2286,6 @@ plt.rcParams['figure.figsize'] = [10, 4.0]
 plt.rcParams['font.size'] = 8`;
             
             // Build args dict from parameters
-            const argsDict = {};
             const paramsControls = paramsRoot ? paramsRoot.querySelector('#seq-params-controls') : null;
             if (paramsControls && this.functionParams) {
                 this.functionParams.forEach(param => {
@@ -2299,6 +2329,7 @@ import __main__
 import pypulseq as pp
 from seq_source_manager import SourceManager
 
+print("PYTHON (popup): Execution starting...")
 # Configure matplotlib
 plt.close('all')
 plt.ion()
@@ -2310,6 +2341,7 @@ pp.Sequence.plot = plt.show = lambda *args, **kwargs: None
 
 try:
     # Execute the function
+    print(f"PYTHON (popup): Calling manager.execute_function for ${functionName}")
     manager = SourceManager()
     result = manager.execute_function(
         module_path=None,
@@ -2317,24 +2349,30 @@ try:
         code=${JSON.stringify(code)},
         args_dict=${JSON.stringify(argsDict)}
     )
+    print(f"PYTHON (popup): Result from execute_function: {result}")
 finally:
     # Restore plotting functions
     pp.Sequence.plot, plt.show = _orig_plot, _orig_show
 
 # Get sequence from SourceManager._last_sequence (stored by execute_function)
 seq = getattr(SourceManager, '_last_sequence', None)
+print(f"PYTHON (popup): Found sequence object: {seq is not None}")
 
 # Ensure pypulseq is patched (SourceManager re-imports may have lost it)
 if hasattr(sys, '_pp_patch_func'):
+    print("PYTHON (popup): Re-applying patches...")
     sys._pp_patch_func()
 
 # Plot if sequence found
 if seq is not None:
+    print(f"PYTHON (popup): Calling seq.plot(plot_speed='${plotSpeed}')")
     plt.close('all')
     seq.plot(plot_now=False, plot_speed="${plotSpeed}")
+    print("PYTHON (popup): Plot command finished, calling plt.show()")
     plt.show()
+    print("PYTHON (popup): plt.show() returned")
 else:
-    print("No sequence found")
+    print("PYTHON ERROR (popup): No sequence found")
 
 result
 `);
