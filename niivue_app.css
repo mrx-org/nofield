@@ -194,9 +194,15 @@
 }
 .niivue-app .layout.standalone-layout .standalone-sidebar .volume-row-btn,
 .niivue-app .layout.standalone-layout .standalone-sidebar .btn.volume-row-btn {
-  padding: 2px 6px;
-  font-size: 10px;
+  width: 20px;
+  min-width: 20px;
   height: 20px;
+  padding: 0;
+  font-size: 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
 }
 .niivue-app .layout.standalone-layout .standalone-sidebar .volume-row-btn:hover:not(:disabled),
 .niivue-app .layout.standalone-layout .standalone-sidebar .btn.volume-row-btn:hover:not(:disabled) {

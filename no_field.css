@@ -139,10 +139,19 @@
     align-items: center;
 }
 
-.volume-row-btn {
-    padding: var(--spacing-xs) 6px;
-    font-size: var(--font-size-xs);
-    height: 20px;
+.volume-row-btn,
+.btn.volume-row-btn {
+    width: 20px !important;
+    min-width: 20px !important;
+    height: 20px !important;
+    padding: 0 !important;
+    font-size: 9px !important;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    aspect-ratio: 1;
+    flex-shrink: 0;
 }
 
 .volume-row-btn:hover:not(:disabled),
@@ -150,6 +159,16 @@
     background: var(--accent) !important;
     border-color: var(--accent) !important;
     color: white !important;
+}
+
+.volume-row-btn .bi,
+.dl-seq-btn .bi,
+.remove-job-btn .bi {
+    font-size: 1em;
+    line-height: 1;
+    display: block;
+    width: 1em;
+    height: 1em;
 }
 
 /* Section Header (used in niivue_app.js) */
@@ -337,9 +356,7 @@
 
 /* Queue Action Buttons - Small uppercase buttons for scan queue */
 .view-btn,
-.view-seq-btn,
-.dl-seq-btn,
-.remove-job-btn {
+.view-seq-btn {
     background: rgba(59, 130, 246, 0.3);
     border: 1px solid rgba(59, 130, 246, 0.4);
     color: var(--text);
@@ -352,6 +369,29 @@
     cursor: pointer;
     white-space: nowrap;
     text-transform: uppercase;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+}
+
+/* Icon-only square buttons (download / remove) */
+.dl-seq-btn,
+.remove-job-btn {
+    width: 20px;
+    min-width: 20px;
+    height: 20px;
+    padding: 0;
+    box-sizing: border-box;
+    aspect-ratio: 1;
+    flex-shrink: 0;
+    background: rgba(59, 130, 246, 0.3);
+    border: 1px solid rgba(59, 130, 246, 0.4);
+    color: var(--text);
+    font-size: 9px;
+    font-weight: var(--font-weight-bold);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;

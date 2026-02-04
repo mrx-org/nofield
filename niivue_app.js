@@ -527,7 +527,6 @@ export class NiivueModule {
     window.addEventListener("mousemove", (e) => this.handleMouseMove(e));
     window.addEventListener("mouseup", () => this.handleMouseUp());
     this.canvas.addEventListener("wheel", (e) => this.handleWheel(e), { passive: false, capture: true });
-    window.addEventListener("keydown", (e) => this.handleKeydown(e));
 
     setInterval(() => this.updateAngles(), 200);
     this.setStatus("ready");
@@ -850,26 +849,6 @@ def run_resampling(source_bytes, reference_bytes):
   setStatus(s) {
     if (this.statusText) this.statusText.textContent = s;
     if (this.statusOverlay) this.statusOverlay.textContent = s;
-  }
-
-  handleKeydown(e) {
-    const target = e.target;
-    if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable)) return;
-    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
-    const vols = this.nv?.volumes || [];
-    const nFrame = (v) => v.nFrame4D ?? (v.dims && v.dims.length > 3 ? v.dims[3] : 1);
-    const vol4d = vols.find(v => (v.opacity ?? 0) > 0 && nFrame(v) > 1);
-    if (!vol4d) return;
-    const n = nFrame(vol4d);
-    let frame = vol4d.frame4D ?? 0;
-    if (e.key === "ArrowLeft") frame = Math.max(0, frame - 1);
-    else frame = Math.min(n - 1, frame + 1);
-    if (frame === (vol4d.frame4D ?? 0)) return;
-    vol4d.frame4D = frame;
-    if (typeof vol4d.applyOptionsUpdate === "function") vol4d.applyOptionsUpdate({ frame4D: frame });
-    this.nv.drawScene();
-    this.setStatus(`${vol4d.name || "Volume"}: frame ${frame + 1}/${n}`);
-    e.preventDefault();
   }
 
   readAnglesBestEffort() {
@@ -1527,9 +1506,34 @@ def run_resampling(source_bytes, reference_bytes):
         const m = vol.name.match(/_([^_.]+)\.nii(\.gz)?$/i);
         titleText = m ? m[1] : vol.name.replace(/\.nii(\.gz)?$/i, '').replace(/.*_/, '') || vol.name;
       }
+      let dimTooltip = "";
+      try {
+        const hdr = vol.hdr ?? vol.header ?? null;
+        const dimRaw = hdr?.dims ?? hdr?.dim ?? vol.dims ?? vol.dim ?? null;
+        const pixRaw = hdr?.pixDims ?? hdr?.pixDim ?? vol.pixDims ?? null;
+        let matrixStr = "";
+        let resolutionStr = "";
+        if (Array.isArray(dimRaw) && dimRaw.length >= 4) {
+          const nx = dimRaw[1], ny = dimRaw[2], nz = dimRaw[3];
+          matrixStr = `${nx}×${ny}×${nz}`;
+          const nt = dimRaw[4] ?? 1;
+          if (nt && nt > 1) matrixStr += `×${nt}`;
+        }
+        if (Array.isArray(pixRaw) && pixRaw.length >= 4) {
+          const sx = Number(pixRaw[1]), sy = Number(pixRaw[2]), sz = Number(pixRaw[3]);
+          if (Number.isFinite(sx) && Number.isFinite(sy) && Number.isFinite(sz)) {
+            resolutionStr = `${Number(sx).toFixed(2)}×${Number(sy).toFixed(2)}×${Number(sz).toFixed(2)} mm`;
+          }
+        }
+        const lines = [titleText];
+        if (matrixStr) lines.push(matrixStr);
+        if (resolutionStr) lines.push(resolutionStr);
+        if (lines.length > 1) dimTooltip = lines.join("\n");
+      } catch (_) {}
       const title = document.createElement("div");
       title.className = "volume-row-title";
       title.textContent = titleText;
+      if (dimTooltip) title.title = dimTooltip;
       info.appendChild(title);
       if (!noMeta) {
         const meta = document.createElement("div");
@@ -1543,14 +1547,14 @@ def run_resampling(source_bytes, reference_bytes):
       actions.className = "volume-row-actions";
       if (!noDownload) {
         const dl = document.createElement("button");
-        dl.innerHTML = "↓";
+        dl.innerHTML = "<i class=\"bi bi-download\" aria-hidden=\"true\"></i>";
         dl.className = "btn volume-row-btn";
         dl.onclick = (e) => { e.stopPropagation(); this.downloadVolume(vol); };
         actions.appendChild(dl);
       }
       if (!noRemove) {
         const rm = document.createElement("button");
-        rm.textContent = "×";
+        rm.innerHTML = "<i class=\"bi bi-x-lg\" aria-hidden=\"true\"></i>";
         rm.className = "btn volume-row-btn";
         rm.onclick = (e) => {
           e.stopPropagation();
@@ -1595,7 +1599,7 @@ def run_resampling(source_bytes, reference_bytes):
       const actions = document.createElement("div");
       actions.className = "volume-row-actions";
       const dl = document.createElement("button");
-      dl.innerHTML = "↓";
+      dl.innerHTML = "<i class=\"bi bi-download\" aria-hidden=\"true\"></i>";
       dl.className = "btn volume-row-btn";
       dl.title = "Download as zip (folder + JSON + NIfTIs)";
       dl.onclick = (e) => {
@@ -1603,7 +1607,7 @@ def run_resampling(source_bytes, reference_bytes):
         this.downloadGroupAsZip(group);
       };
       const rm = document.createElement("button");
-      rm.textContent = "×";
+      rm.innerHTML = "<i class=\"bi bi-x-lg\" aria-hidden=\"true\"></i>";
       rm.className = "btn volume-row-btn";
       rm.onclick = (e) => {
         e.stopPropagation();
@@ -1696,8 +1700,13 @@ def run_resampling(source_bytes, reference_bytes):
       const toRemove = this.nv.volumes.filter(v => !v.name.startsWith("scan_") && !v.name.toLowerCase().includes("mask"));
       toRemove.forEach(v => this.nv.removeVolume(v));
       this.volumeGroups = [];
+      // Ensure PD volume is first (volume 0) if present
       const pdIdx = ordered.findIndex(f => /_PD\.nii(\.gz)?$/i.test(f.name));
-      const defaultVisibleIdx = pdIdx >= 0 ? pdIdx : 0;
+      if (pdIdx > 0) {
+        const [pdFile] = ordered.splice(pdIdx, 1);
+        ordered.unshift(pdFile);
+      }
+      const defaultVisibleIdx = 0;
       const groupVolumes = [];
       for (let i = 0; i < ordered.length; i++) {
         const f = ordered[i];

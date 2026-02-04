@@ -242,14 +242,14 @@ _final_status
                             <button class="view-seq-btn">VIEW SEQ</button>
                         </div>
                         <div class="action-row small-btns">
-                            <button class="dl-seq-btn" title="Download .seq file">↓</button>
-                            <button class="remove-job-btn" title="Remove scan">×</button>
+                            <button class="dl-seq-btn" title="Download .seq file"><i class="bi bi-download" aria-hidden="true"></i></button>
+                            <button class="remove-job-btn" title="Remove scan"><i class="bi bi-x-lg" aria-hidden="true"></i></button>
                         </div>
                     ` : ''}
                     ${job.status === 'error' ? `
                         <div class="action-row small-btns">
                             <span class="error-icon" title="${job.error}">⚠</span>
-                            <button class="remove-job-btn" title="Remove scan">×</button>
+                            <button class="remove-job-btn" title="Remove scan"><i class="bi bi-x-lg" aria-hidden="true"></i></button>
                         </div>
                     ` : ''}
                 </div>
