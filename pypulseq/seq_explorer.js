@@ -233,6 +233,7 @@ export class SequenceExplorer {
             });
         }
         
+        
         const popBtn = this.container.querySelector('#seq-pop-btn');
         if (popBtn) {
             popBtn.addEventListener('click', () => {
@@ -509,11 +510,11 @@ json.dumps(versions)
         // Load all sources in parallel for better performance
         const loadPromises = this.config.sources.map(async (source) => {
             try {
-                console.log('Loading source:', source.name || source.type, source);
+                console.log('Loading source:', source.name || source.path || source.type, source);
                 await this.loadSource(source);
             } catch (error) {
-                console.error(`Error loading source ${source.name || 'unknown'}:`, error);
-                this.showStatus(`Error loading ${source.name || 'unknown'}: ${error.message}`, 'error');
+                console.error(`Error loading source ${source.name || source.path || 'unknown'}:`, error);
+                this.showStatus(`Error loading ${source.name || source.path || 'unknown'}: ${error.message}`, 'error');
             }
         });
         
@@ -531,7 +532,155 @@ json.dumps(versions)
             this.showStatus('No sequences found. Check console for errors.', 'error');
         }
     }
-    
+
+    /**
+     * Resolve config type (file | folder | module) to internal loader type.
+     * Config must set type; no inference.
+     */
+    resolveSourceType(source) {
+        const configType = source?.type;
+        const path = source?.path || source?.url || '';
+        if (configType === 'module') return 'pyodide_module';
+        if (configType === 'folder') return 'folder';
+        if (configType === 'file') {
+            if (typeof path === 'string' && path.startsWith('built_in_seq')) return 'built-in';
+            if (typeof path !== 'string') return 'local_file';
+            if (path.includes('://')) return 'remote_file';
+            return 'local_file';
+        }
+        if (source?.isUserEdited && typeof path === 'string') {
+            return path.includes('://') ? 'remote_file' : 'local_file';
+        }
+        throw new Error(`Source type required. Got: ${configType}. Use "file", "folder", or "module".`);
+    }
+
+    /** @param {object} source - source object (canonical or legacy) */
+    getSourcePath(source) {
+        return source?.path ?? source?.seq_func_file ?? '';
+    }
+
+    /** @param {object} source - source object. Returns seq_func (call target); supports legacy base_sequence. */
+    getSourceBaseSequence(source) {
+        return source?.seq_func ?? source?.base_sequence ?? '';
+    }
+
+    /**
+     * Derive protocol display name from seq_func_file: strip .py, then take part after last . or /.
+     * @param {string} seqFuncFile - e.g. "mrseq.scripts.radial_flash" or "user/seq/seq_gre_4.py"
+     * @returns {string} e.g. "radial_flash" or "seq_gre_4"
+     */
+    getProtocolDisplayNameFromSeqFuncFile(seqFuncFile) {
+        let s = String(seqFuncFile || '').trim();
+        if (s.endsWith('.py')) s = s.slice(0, -3);
+        const lastDot = s.lastIndexOf('.');
+        const lastSlash = s.lastIndexOf('/');
+        const splitAt = Math.max(lastDot, lastSlash);
+        const name = splitAt >= 0 ? s.slice(splitAt + 1) : s;
+        // Return non-empty only so caller can fall back to path/fileName; avoid literal "protocol"
+        return (name && name.trim()) ? name : '';
+    }
+
+    /**
+     * Path to use for display name: for module sources, prefer fileName (full module path e.g. mrseq.scripts.radial_flash)
+     * over source.path (package only e.g. mrseq.scripts) so we show "radial_flash" not "scripts".
+     */
+    getPathForDisplayName(fileName, source) {
+        const base = source?.seq_func_file || source?.path || fileName || '';
+        if (fileName && base && typeof base === 'string' && base.includes('.') && !base.includes('/') &&
+            fileName.startsWith(base) && fileName.length > base.length) {
+            return fileName;
+        }
+        return base;
+    }
+
+    /**
+     * Get the code string for a file-based sequence (cached or fetched). Returns null for module sources.
+     * @param {string} fileName - sequence key
+     * @param {object} source - source object
+     * @returns {Promise<string|null>} code string or null for module
+     */
+    async getCodeForSequence(fileName, source) {
+        const sourceType = this.resolveSourceType(source);
+        const fileBased = ['local_file', 'built-in', 'remote_file', 'folder'];
+        if (!fileBased.includes(sourceType)) {
+            return null;
+        }
+        let code = this.sequences[fileName]?.code;
+        if (code) return code;
+        if (sourceType === 'local_file' || sourceType === 'built-in') {
+            const url = this.resolvePath(source.path) + '?t=' + Date.now();
+            const response = await fetch(url);
+            if (!response.ok) throw new Error(`Failed to fetch ${source.path}`);
+            return await response.text();
+        }
+        if (sourceType === 'remote_file') {
+            let fetchUrl = source.url || source.path || '';
+            if (fetchUrl && fetchUrl.includes('github.com') && fetchUrl.includes('/blob/')) {
+                fetchUrl = fetchUrl.replace('github.com', 'raw.githubusercontent.com').replace('/blob/', '/');
+            }
+            const response = await fetch(fetchUrl);
+            if (!response.ok) throw new Error(`Failed to fetch ${fetchUrl}`);
+            return await response.text();
+        }
+        if (sourceType === 'folder') {
+            const allFiles = Object.keys(this.sequences);
+            throw new Error(`Code not found for ${fileName}. Folder code should be cached. Available: ${allFiles.join(', ')}`);
+        }
+        return null;
+    }
+
+    /**
+     * Build the Python script string for executing a sequence (file-based or module).
+     * @param {{ sourceType: 'file_based'|'pyodide_module', code: string|null, modulePath: string, functionName: string, argsDict: object, silent: boolean, themeCode: string, plotSpeed: string, debug?: boolean }} options
+     * @returns {string} Python script
+     */
+    buildExecuteScript(options) {
+        const { sourceType, code, modulePath, functionName, argsDict, silent, themeCode, plotSpeed, debug = false } = options;
+        const argsJson = JSON.stringify(argsDict);
+        const execCall = sourceType === 'file_based'
+            ? `manager.execute_function(\n        module_path=None,\n        function_name='${functionName}',\n        code=${JSON.stringify(code)},\n        args_dict=${argsJson}\n    )`
+            : `manager.execute_function(\n        module_path='${modulePath}',\n        function_name='${functionName}',\n        code=None,\n        args_dict=${argsJson}\n    )`;
+        const dbgStart = debug ? 'print("PYTHON (popup): Execution starting...")\n' : '';
+        const dbgResult = debug ? '\n    print(f"PYTHON (popup): Result from execute_function: {result}")' : '';
+        const dbgSeq = debug ? '\nprint(f"PYTHON (popup): Found sequence object: {seq is not None}")' : '';
+        const dbgPatch = debug ? '\n    print("PYTHON (popup): Re-applying patches...")' : '';
+        const plotBlock = debug
+            ? `if seq is not None:\n    print(f"PYTHON (popup): Calling seq.plot(plot_speed='${plotSpeed}')")\n    plt.close('all')\n    seq.plot(plot_now=False, plot_speed="${plotSpeed}")\n    print("PYTHON (popup): Plot command finished, calling plt.show()")\n    plt.show()\n    print("PYTHON (popup): plt.show() returned")\nelse:\n    print("PYTHON ERROR (popup): No sequence found")`
+            : `if seq is not None:\n    if not ${silent ? 'True' : 'False'}:\n        plt.close('all')\n        seq.plot(plot_now=False, plot_speed="${plotSpeed}")\n        plt.show()\n    else:\n        print("Sequence generated (silent mode)")\nelse:\n    print("No sequence found")`;
+
+        return `
+import json
+import sys
+import matplotlib.pyplot as plt
+import __main__
+import pypulseq as pp
+from seq_source_manager import SourceManager
+${dbgStart}# Configure matplotlib
+plt.close('all')
+plt.ion()
+${themeCode}
+
+_orig_plot, _orig_show = pp.Sequence.plot, plt.show
+pp.Sequence.plot = plt.show = lambda *args, **kwargs: None
+
+try:
+    manager = SourceManager()
+    result = ${execCall}${dbgResult}
+finally:
+    pp.Sequence.plot, plt.show = _orig_plot, _orig_show
+
+seq = getattr(SourceManager, '_last_sequence', None)
+${dbgSeq}
+
+if hasattr(sys, '_pp_patch_func'):
+    sys._pp_patch_func()${dbgPatch}
+
+${plotBlock}
+
+result
+`.trim();
+    }
+
     selectFirstSequence() {
         // Find the first visible function item in the tree and select it
         const treeEl = this.treeTarget || (this.container ? this.container.querySelector('#seq-tree') : null);
@@ -545,31 +694,28 @@ json.dumps(versions)
     }
     
     async loadSource(source) {
+        const sourceType = this.resolveSourceType(source);
         // Install dependencies BEFORE loading the source
         // This ensures that configured sources can be loaded properly
         // Dependencies are only installed for sources that are actually in the config
         if (source.dependencies && source.dependencies.length > 0 && this.config.pyodide) {
-            console.log(`Installing dependencies for source "${source.name}":`, source.dependencies);
-            this.showStatus(`Installing dependencies for ${source.name}...`, 'info');
+            const sourceLabel = source.name || source.path || 'source';
+            console.log(`Installing dependencies for source "${sourceLabel}":`, source.dependencies);
+            this.showStatus(`Installing dependencies for ${sourceLabel}...`, 'info');
             await this.installDependencies(source.dependencies);
         }
         
-        if (source.type === 'local_file' || source.type === 'built-in') {
+        if (sourceType === 'local_file' || sourceType === 'built-in') {
             await this.loadLocalFile(source);
-        } else if (source.type === 'github_raw') {
-            await this.loadGitHubRaw(source);
-        } else if (source.type === 'remote_file') {
+        } else if (sourceType === 'remote_file') {
             // Generic remote file from any URL (GitHub raw, gist, or any other URL)
             await this.loadRemoteFile(source);
-        } else if (source.type === 'github_folder') {
-            await this.loadGitHubFolder(source);
-        } else if (source.type === 'pyodide_module') {
-            // Dependencies are now installed above, so the module should load successfully
+        } else if (sourceType === 'folder') {
+            await this.loadFolder(source);
+        } else if (sourceType === 'pyodide_module') {
             await this.loadPyodideModule(source);
-        } else if (source.type === 'custom') {
-            await source.loader(this);
         } else {
-            throw new Error(`Unknown source type: ${source.type}`);
+            throw new Error(`Unknown source type: ${sourceType}`);
         }
     }
     
@@ -715,35 +861,37 @@ else:
 `);
                 const fileCode = JSON.parse(code);
                 if (fileCode) {
-                    // Use code from Python memory
-                    await this.parseFile(source.name || source.path, fileCode, source);
+                    // Use code from Python memory (path is unique key; name can be shared)
+                    await this.parseFile(source.path || source.name, fileCode, source);
                     return;
                 }
             } catch (e) {
-                console.warn('Could not load from Python memory, trying localStorage:', e);
-            }
-            
-            // Fallback to localStorage
-            const storageKey = `seq_user_edited_${source.path}`;
-            const stored = localStorage.getItem(storageKey);
-            if (stored) {
-                try {
-                    const data = JSON.parse(stored);
-                    if (data.code) {
-                        await this.parseFile(source.name || source.path, data.code, source);
-                        return;
-                    }
-                } catch (e) {
-                    console.warn('Could not parse stored code:', e);
-                }
+                console.warn('Could not load from Python memory:', e);
             }
         }
         
         // Regular file loading
-        const response = await fetch(this.resolvePath(source.path));
+        const response = await fetch(this.resolvePath(source.path) + '?t=' + Date.now());
         if (!response.ok) throw new Error(`Failed to fetch ${source.path}`);
         const code = await response.text();
-        await this.parseFile(source.name || source.path, code, source);
+        // Mirror built-in files into a package-like path for imports
+        if (this.config.pyodide && source.path && source.path.startsWith('built_in_seq/')) {
+            const fileBase = source.path.split('/').pop();
+            await this.config.pyodide.runPythonAsync(`
+import os
+pkg_dir = '/built_in_seq'
+if not os.path.exists(pkg_dir):
+    os.makedirs(pkg_dir)
+init_path = os.path.join(pkg_dir, '__init__.py')
+if not os.path.exists(init_path):
+    with open(init_path, 'w', encoding='utf-8') as f:
+        f.write('')
+with open(os.path.join(pkg_dir, '${fileBase}'), 'w', encoding='utf-8') as f:
+    f.write(${JSON.stringify(code)})
+`);
+        }
+        // Use path as key so multiple files with the same source name (e.g. "Built-in") don't overwrite
+        await this.parseFile(source.path || source.name, code, source);
     }
     
     async loadGitHubRaw(source) {
@@ -752,32 +900,32 @@ else:
         if (!response.ok) throw new Error(`Failed to fetch ${source.url}: ${response.status} ${response.statusText}`);
         const code = await response.text();
         const fileName = source.name || source.url.split('/').pop();
-        console.log(`Parsing file ${fileName}, code length: ${code.length}`);
-        await this.parseFile(fileName, code, source);
+        const cachedPath = `remote/${fileName}`;
+        console.log(`Caching external file ${fileName} -> ${cachedPath}, code length: ${code.length}`);
+        await this.storeUserFile(cachedPath, code);
+        await this.parseFile(cachedPath, code, { ...source, path: cachedPath });
     }
     
     async loadRemoteFile(source) {
-        // Generic remote file loader - works with any URL (GitHub raw, gist, pastebin, etc.)
-        console.log('Fetching remote file:', source.url);
-        
-        // If it's a GitHub blob URL, convert it to raw URL
-        let fetchUrl = source.url;
-        if (source.url.includes('github.com') && source.url.includes('/blob/')) {
-            // Convert GitHub blob URL to raw URL
-            // https://github.com/user/repo/blob/branch/path/file.py -> https://raw.githubusercontent.com/user/repo/branch/path/file.py
-            fetchUrl = source.url
+        const url = source.url || source.path || '';
+        if (!url) throw new Error('Remote file source must have url or path');
+        console.log('Fetching remote file:', url);
+
+        let fetchUrl = url;
+        if (url.includes('github.com') && url.includes('/blob/')) {
+            fetchUrl = url
                 .replace('github.com', 'raw.githubusercontent.com')
                 .replace('/blob/', '/');
             console.log('Converted GitHub blob URL to raw URL:', fetchUrl);
         }
-        
+
         const response = await fetch(fetchUrl);
         if (!response.ok) {
             throw new Error(`Failed to fetch ${fetchUrl}: ${response.status} ${response.statusText}`);
         }
-        
+
         let code = await response.text();
-        let fileName = source.name || source.url.split('/').pop() || 'remote_file.py';
+        let fileName = source.name || url.split('/').pop() || 'remote_file.py';
         
         // If it's a Jupyter notebook (.ipynb), convert it to Python code using SourceManager
         if (fileName.endsWith('.ipynb') || fetchUrl.endsWith('.ipynb')) {
@@ -824,15 +972,16 @@ python_code
             }
         }
         
-        console.log(`Parsing remote file ${fileName}, code length: ${code.length}`);
-        await this.parseFile(fileName, code, source);
+        const cachedPath = `remote/${fileName}`;
+        console.log(`Caching external file ${fileName} -> ${cachedPath}, code length: ${code.length}`);
+        await this.storeUserFile(cachedPath, code);
+        await this.parseFile(cachedPath, code, { ...source, path: cachedPath });
     }
     
-    async loadGitHubFolder(source) {
-        // Use GitHub API to list files in folder
-        // Convert GitHub URL to API URL
-        // https://github.com/user/repo/tree/branch/path -> https://api.github.com/repos/user/repo/contents/path?ref=branch
-        let apiUrl = source.url.replace('https://github.com/', 'https://api.github.com/repos/');
+    async loadFolder(source) {
+        const url = source.url || source.path || '';
+        if (!url.startsWith('https://github.com/')) throw new Error('Folder source must have url or path with https://github.com/');
+        let apiUrl = url.replace('https://github.com/', 'https://api.github.com/repos/');
         
         // Handle both /tree/ and /blob/ URLs
         if (apiUrl.includes('/tree/')) {
@@ -882,16 +1031,10 @@ python_code
                     const fileResponse = await fetch(file.download_url);
                     if (fileResponse.ok) {
                         const code = await fileResponse.text();
-                        // Store code first
-                        if (!this.sequences[file.name]) {
-                            this.sequences[file.name] = { functions: [], source: { ...source, filePath: file.path }, code: code };
-                        } else {
-                            this.sequences[file.name].code = code;
-                            // Update source info but keep existing functions if any
-                            this.sequences[file.name].source = { ...source, filePath: file.path };
-                        }
-                        // Parse functions from the code - await to ensure it completes
-                        await this.parseFile(file.name, code, { ...source, filePath: file.path });
+                        const folderKey = (source.name || source.path || 'folder').replace(/[^a-zA-Z0-9_.-]/g, '_');
+                        const cachedPath = `folder/${folderKey}/${file.name}`;
+                        await this.storeUserFile(cachedPath, code);
+                        await this.parseFile(cachedPath, code, { ...source, path: cachedPath, filePath: file.path });
                         loadedCount++;
                     } else {
                         console.warn(`Failed to fetch ${file.name}: ${fileResponse.status} ${fileResponse.statusText}`);
@@ -901,7 +1044,7 @@ python_code
                 }
             }
         }
-        console.log(`Loaded ${loadedCount} files from GitHub folder "${source.name}"`);
+        console.log(`Loaded ${loadedCount} files from folder "${source.name || source.path || source.url}"`);
     }
     
     async loadPyodideModule(source) {
@@ -910,7 +1053,7 @@ python_code
         }
         
         const pyodide = this.config.pyodide;
-        const modulePath = source.module;
+        const modulePath = source.module || source.path;
         const folderPath = source.folder || '';
         
         // Try to load without installing dependencies first
@@ -939,7 +1082,7 @@ json.dumps(all_functions)
                 // Dependencies should already be installed by loadSource(), so this is a real error
                 const errorMsg = allFunctions.error;
                 console.error(`Failed to load module ${modulePath}: ${errorMsg}`);
-                this.showStatus(`Error loading source "${source.name}": ${errorMsg}`, 'error');
+                this.showStatus(`Error loading source "${source.name || source.path || source.url}": ${errorMsg}`, 'error');
                 throw new Error(`Failed to load module ${modulePath}: ${errorMsg}`);
             }
             
@@ -1003,11 +1146,11 @@ get_functions_from_module('${modulePath}', '${folderPath}')
                 // Dependencies should already be installed by loadSource(), so this is a real error
                 const errorMsg = functions.error;
                 console.error(`Failed to load module ${modulePath}: ${errorMsg}`);
-                this.showStatus(`Error loading source "${source.name}": ${errorMsg}`, 'error');
+                this.showStatus(`Error loading source "${source.name || source.path || source.url}": ${errorMsg}`, 'error');
                 throw new Error(`Failed to load module ${modulePath}: ${errorMsg}`);
             }
             
-            const fileName = source.name || modulePath;
+            const fileName = source.name || source.path || modulePath;
             if (!this.sequences[fileName]) {
                 this.sequences[fileName] = { functions: [], source: source };
             }
@@ -1025,7 +1168,7 @@ get_functions_from_module('${modulePath}', '${folderPath}')
             // Dependencies should already be installed by loadSource(), so this is a real error
             const errorMsg = error.message || String(error);
             console.error(`Failed to load module ${modulePath}: ${errorMsg}`);
-            this.showStatus(`Error loading source "${source.name}": ${errorMsg}`, 'error');
+            this.showStatus(`Error loading source "${source.name || source.path || source.url}": ${errorMsg}`, 'error');
             // Re-throw the error so it's properly handled by loadSequences()
             throw error;
         }
@@ -1130,7 +1273,7 @@ json.dumps(functions)
                     ${this.config.showFilter ? `
                     <label style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.75rem; color: var(--muted); cursor: pointer; user-select: none;">
                         <input type="checkbox" id="seq-filter-checkbox" ${this.filterSeqPrefix ? 'checked' : ''} style="width: 0.8rem; height: 0.8rem; margin: 0; cursor: pointer;">
-                        <span>Only seq_ or main</span>
+                        <span>Only seq_/prot_ or main</span>
                     </label>
                     ` : ''}
                     <button id="seq-add-sources-btn" class="btn btn-secondary btn-sm">
@@ -1161,10 +1304,11 @@ json.dumps(functions)
         const sourceGroups = {};
         
         for (const [fileName, fileData] of Object.entries(this.sequences)) {
-            // Group all user-edited files under "User Refined"
-            let sourceName = fileData.source?.name || 'Unknown';
+            let sourceName = fileData.source?.name || fileData.source?.path || 'Unknown';
             if (fileData.source?.isUserEdited) {
-                sourceName = 'User Refined';
+                const isProtocol = fileData.source?.itemKind === 'protocol' ||
+                    (fileData.source?.path && fileData.source.path.startsWith('user/prot/'));
+                sourceName = isProtocol ? 'User Protocols' : 'User Refined';
             }
             
             if (!sourceGroups[sourceName]) {
@@ -1176,7 +1320,7 @@ json.dumps(functions)
                 if (!this.filterSeqPrefix) {
                     return true;
                 } else {
-                    return f.name.startsWith('seq_') || f.name === 'main';
+                    return f.name.startsWith('seq_') || f.name.startsWith('prot_') || f.name === 'main';
                 }
             });
             
@@ -1200,13 +1344,12 @@ json.dumps(functions)
             // Get source info for header
             const firstFile = files[0];
             const source = firstFile.source;
-            // Determine type/module info to display
-            // For "User Refined" group, don't show type info
+            // Determine type/module info to display (hide for user-edited groups)
             let typeInfo = '';
-            if (sourceName !== 'User Refined') {
+            if (sourceName !== 'User Refined' && sourceName !== 'User Protocols') {
                 if (source?.type === 'pyodide_module' && source?.module) {
                     // For module sources: show module path
-                    typeInfo = source.module;
+                    typeInfo = source.module || source.path;
                 } else if (source?.type) {
                     // For other sources: show type
                     typeInfo = source.type;
@@ -1229,40 +1372,31 @@ json.dumps(functions)
                     </div>
                     <div class="seq-source-items ${collapsedClass}" data-source="${sourceName}">
                         ${files.map(({ fileName, functions, source }) => {
-                            // For user-edited files, use displayName if available
+                            const isProtocol = source?.itemKind === 'protocol' || (source?.path && source.path.startsWith('user/prot/'));
                             let displayFileName = fileName;
-                            if (source?.isUserEdited && source?.displayName) {
+                            if (isProtocol) {
+                                displayFileName = source?.displayName || this.getProtocolDisplayNameFromSeqFuncFile(this.getPathForDisplayName(fileName, source)) || (source?.path || fileName).split('/').pop().replace(/\.py$/, '');
+                            } else if (source?.isUserEdited && source?.displayName) {
                                 displayFileName = source.displayName;
+                            } else if (fileName.startsWith('user/')) {
+                                displayFileName = fileName.split('/').pop().replace(/\.py$/, '');
                             } else {
-                                // Extract just the basename (filename without path or module prefix)
-                                // Handle both file paths (with / or \) and module paths (with .)
-                                let shortFileName = fileName;
-                                
-                                // Remove path separators first (including user/ prefix)
-                                shortFileName = shortFileName.split('/').pop().split('\\').pop();
-                                
-                                // For module-based sources, remove module prefix (everything before last dot before .py)
-                                // e.g., "mrseq.scripts.t1_inv_rec_gre_single_line.py" -> "t1_inv_rec_gre_single_line.py"
+                                let shortFileName = fileName.split('/').pop().split('\\').pop();
                                 if (shortFileName.endsWith('.py')) {
-                                    // Find the last dot before .py
-                                    const pyIndex = shortFileName.length - 3; // index of 'p' in '.py'
+                                    const pyIndex = shortFileName.length - 3;
                                     const lastDotBeforePy = shortFileName.lastIndexOf('.', pyIndex - 1);
                                     if (lastDotBeforePy > 0) {
-                                        // Extract just the filename part (after last dot before .py)
                                         shortFileName = shortFileName.substring(lastDotBeforePy + 1);
                                     }
                                 }
                                 displayFileName = shortFileName;
                             }
-                            
-                            // Remove .py extension for display
                             if (displayFileName.endsWith('.py')) {
                                 displayFileName = displayFileName.slice(0, -3);
                             }
-                            
                             return functions.map(func => `
                                 <div class="seq-function-item" data-file="${fileName}" data-function="${func.name}" ${func.doc ? `title="${func.doc.replace(/"/g, '&quot;')}"` : ''}>
-                                    <span class="seq-file-function-name">${displayFileName}:${func.name}</span>
+                                    <span class="seq-file-function-name">${isProtocol ? displayFileName : `${displayFileName}:${func.name}`}</span>
                                 </div>
                             `).join('');
                         }).join('')}
@@ -1325,8 +1459,9 @@ json.dumps(functions)
                 const functionName = item.dataset.function;
                 const fileData = this.sequences[fileName];
                 const func = fileData.functions.find(f => f.name === functionName);
-                
-                this.selectedSequence = { fileName, functionName, ...func, source: fileData.source };
+                const src = fileData.source;
+                const displayName = src?.displayName || this.getProtocolDisplayNameFromSeqFuncFile(this.getPathForDisplayName(fileName, src)) || (src?.path || fileName).split('/').pop().replace(/\.py$/, '');
+                this.selectedSequence = { fileName, functionName, displayName, ...func, source: fileData.source };
                 
                 // Update sequence name display immediately
                 this.updateSequenceNameDisplay();
@@ -1387,37 +1522,11 @@ json.dumps(functions)
                 await this.installDependencies(source.dependencies);
             }
             
-            // Extract parameters based on source type
             let paramsJson;
-            
-            if (source.type === 'local_file' || source.type === 'built-in' || source.type === 'github_raw' || source.type === 'remote_file' || source.type === 'github_folder') {
-                // For file-based sources, get the code (use cached if available)
-                const fileData = this.sequences[fileName];
-                console.log('File data:', { fileName, hasFileData: !!fileData, hasCode: !!fileData?.code, sequencesKeys: Object.keys(this.sequences) });
-                
-                let code = fileData?.code;
-                if (!code) {
-                    if (source.type === 'local_file' || source.type === 'built-in') {
-                        code = await (await fetch(this.resolvePath(source.path))).text();
-                    } else if (source.type === 'github_raw' || source.type === 'remote_file') {
-                        // For remote_file, convert GitHub blob URLs to raw if needed
-                        let fetchUrl = source.url;
-                        if (source.type === 'remote_file' && source.url.includes('github.com') && source.url.includes('/blob/')) {
-                            fetchUrl = source.url
-                                .replace('github.com', 'raw.githubusercontent.com')
-                                .replace('/blob/', '/');
-                        }
-                        code = await (await fetch(fetchUrl)).text();
-                    } else {
-                        // github_folder - code should be cached from loadGitHubFolder
-                        // Try to find it in sequences by checking all files
-                        const allFiles = Object.keys(this.sequences);
-                        console.warn(`Code not cached for ${fileName}. Available files:`, allFiles);
-                        throw new Error(`Code not found for ${fileName}. File may not have been loaded from folder yet. Available files: ${allFiles.join(', ')}`);
-                    }
-                }
-                
-                // Use SourceManager to extract parameters
+            const sourceType = this.resolveSourceType(source);
+            const code = await this.getCodeForSequence(fileName, source);
+            if (code !== null) {
+                // File-based: extract parameters from code
                 await this.ensureSourceManager();
                 paramsJson = await pyodide.runPythonAsync(`
 import json
@@ -1431,9 +1540,9 @@ params = manager.extract_function_parameters(
 )
 json.dumps(params)
 `);
-            } else if (source.type === 'pyodide_module') {
+            } else if (sourceType === 'pyodide_module') {
                 // For module-based sources
-                const modulePath = source.fullModulePath || source.module;
+                const modulePath = source.fullModulePath || source.module || source.path;
                 await this.ensureSourceManager();
                 paramsJson = await pyodide.runPythonAsync(`
 import json
@@ -1448,17 +1557,17 @@ params = manager.extract_function_parameters(
 json.dumps(params)
 `);
             } else {
-                throw new Error(`Cannot extract parameters for source type: ${source.type}`);
+                throw new Error(`Cannot extract parameters for source type: ${sourceType}`);
             }
-            
+
             const params = JSON.parse(paramsJson);
             this.functionParams = params;
             
             // Always fetch docstring BEFORE rendering controls, so tooltips can use it
             // For file sources, docstring should already be in the code/selectedSequence
-            if (source.type === 'pyodide_module') {
+            if (sourceType === 'pyodide_module') {
                 try {
-                    const modulePath = source.fullModulePath || source.module;
+                    const modulePath = source.fullModulePath || source.module || source.path;
                     console.log('Fetching docstring for module function:', { modulePath, functionName, source });
                     await this.ensureSourceManager();
                     const docResult = await pyodide.runPythonAsync(`
@@ -1558,18 +1667,20 @@ json.dumps(_result)
             pathToDisplay = source.displayName;
         } else if (source?.type === 'pyodide_module') {
             // For modules, use the module path
-            pathToDisplay = source.module || source.fullModulePath || fileName;
+            pathToDisplay = source.module || source.fullModulePath || source.path || fileName;
         } else {
             // For files, use the file path (remove user/ prefix if present)
             pathToDisplay = fileName.replace(/^user\//, '');
         }
         
-        // Remove .py extension if present
         if (pathToDisplay.endsWith('.py')) {
             pathToDisplay = pathToDisplay.slice(0, -3);
         }
-        
-        const displayName = `${origin} / ${pathToDisplay}:${functionName}`;
+        const isProtocol = source?.itemKind === 'protocol' || (source?.path && source.path.startsWith('user/prot/'));
+        if (isProtocol) {
+            pathToDisplay = source?.displayName || this.getProtocolDisplayNameFromSeqFuncFile(this.getPathForDisplayName(fileName, source)) || (source?.path || fileName).split('/').pop().replace(/\.py$/, '');
+        }
+        const displayName = isProtocol ? `${origin} / ${pathToDisplay}` : `${origin} / ${pathToDisplay}:${functionName}`;
         nameElement.textContent = displayName;
         
         // Get docstring for tooltip
@@ -1817,10 +1928,15 @@ json.dumps(_result)
         }
     }
     
-    async executeFunction(silent = false) {
+    async executeFunction(silent = false, protocolName = null) {
         if (!this.selectedSequence || !this.config.pyodide) {
             console.warn('No function selected or Pyodide not available');
             return;
+        }
+
+        // If a protocolName is provided, save a snapshot first
+        if (protocolName) {
+            await this.saveProtocolSnapshot(protocolName);
         }
         
         const paramsRoot = this.paramsTarget || this.container;
@@ -1923,137 +2039,22 @@ json.dumps(_result)
                 await this.installDependencies(source.dependencies);
             }
             
-            // Use SourceManager to execute the function
             await this.ensureSourceManager();
-            
+
+            const sourceType = this.resolveSourceType(source);
+            const code = await this.getCodeForSequence(fileName, source);
             let result;
-            if (source.type === 'local_file' || source.type === 'built-in' || source.type === 'github_raw' || source.type === 'remote_file' || source.type === 'github_folder') {
-                // Get the code (use cached if available)
-                const fileData = this.sequences[fileName];
-                let code = fileData?.code;
-                if (!code) {
-                    if (source.type === 'local_file' || source.type === 'built-in') {
-                        code = await (await fetch(this.resolvePath(source.path))).text();
-                    } else if (source.type === 'github_raw' || source.type === 'remote_file') {
-                        let fetchUrl = source.url;
-                        if (source.type === 'remote_file' && source.url.includes('github.com') && source.url.includes('/blob/')) {
-                            fetchUrl = source.url
-                                .replace('github.com', 'raw.githubusercontent.com')
-                                .replace('/blob/', '/');
-                        }
-                        code = await (await fetch(fetchUrl)).text();
-                    } else {
-                        code = fileData?.code;
-                    }
-                }
-                
-                result = await pyodide.runPythonAsync(`
-import json
-import sys
-import matplotlib.pyplot as plt
-import __main__
-import pypulseq as pp
-from seq_source_manager import SourceManager
-
-# Configure matplotlib
-plt.close('all')
-plt.ion()
-${themeCode}
-
-# Temporarily disable plotting during code execution to prevent hanging
-# (user code may have seq.plot() in if __name__ == "__main__" blocks)
-_orig_plot, _orig_show = pp.Sequence.plot, plt.show
-pp.Sequence.plot = plt.show = lambda *args, **kwargs: None
-
-try:
-    # Execute the function
-    manager = SourceManager()
-    result = manager.execute_function(
-        module_path=None,
-        function_name='${functionName}',
-        code=${JSON.stringify(code)},
-        args_dict=${JSON.stringify(argsDict)}
-    )
-finally:
-    # Restore plotting functions
-    pp.Sequence.plot, plt.show = _orig_plot, _orig_show
-
-# Get sequence from SourceManager._last_sequence (stored by execute_function)
-seq = getattr(SourceManager, '_last_sequence', None)
-
-# Ensure pypulseq is patched (SourceManager re-imports may have lost it)
-if hasattr(sys, '_pp_patch_func'):
-    sys._pp_patch_func()
-
-# Plot if sequence found
-if seq is not None:
-    if not ${silent ? 'True' : 'False'}:
-        plt.close('all')
-        seq.plot(plot_now=False, plot_speed="${plotSpeed}")
-        plt.show()
-    else:
-        print("Sequence generated (silent mode)")
-else:
-    print("No sequence found")
-
-result
-`);
-            } else if (source.type === 'pyodide_module') {
-                const modulePath = source.fullModulePath || source.module;
-                result = await pyodide.runPythonAsync(`
-import json
-import sys
-import matplotlib.pyplot as plt
-import __main__
-import pypulseq as pp
-from seq_source_manager import SourceManager
-
-# Configure matplotlib
-plt.close('all')
-plt.ion()
-${themeCode}
-
-# Temporarily disable plotting during code execution to prevent hanging
-_orig_plot, _orig_show = pp.Sequence.plot, plt.show
-pp.Sequence.plot = plt.show = lambda *args, **kwargs: None
-
-try:
-    # Execute the function
-    manager = SourceManager()
-    result = manager.execute_function(
-        module_path='${modulePath}',
-        function_name='${functionName}',
-        code=None,
-        args_dict=${JSON.stringify(argsDict)}
-    )
-finally:
-    # Restore plotting functions
-    pp.Sequence.plot, plt.show = _orig_plot, _orig_show
-
-# Get sequence from SourceManager._last_sequence (stored by execute_function)
-seq = getattr(SourceManager, '_last_sequence', None)
-
-# Ensure pypulseq is patched (SourceManager re-imports may have lost it)
-if hasattr(sys, '_pp_patch_func'):
-    sys._pp_patch_func()
-
-# Plot if sequence found
-if seq is not None:
-    if not ${silent ? 'True' : 'False'}:
-        plt.close('all')
-        seq.plot(plot_now=False, plot_speed="${plotSpeed}")
-        plt.show()
-    else:
-        print("Sequence generated (silent mode)")
-else:
-    print("No sequence found")
-
-result
-`);
+            if (code !== null) {
+                const script = this.buildExecuteScript({ sourceType: 'file_based', code, modulePath: '', functionName, argsDict, silent, themeCode, plotSpeed, debug: false });
+                result = await pyodide.runPythonAsync(script);
+            } else if (sourceType === 'pyodide_module') {
+                const modulePath = source.fullModulePath || source.module || source.path;
+                const script = this.buildExecuteScript({ sourceType: 'pyodide_module', code: null, modulePath, functionName, argsDict, silent, themeCode, plotSpeed, debug: false });
+                result = await pyodide.runPythonAsync(script);
             } else {
-                throw new Error(`Cannot execute function for source type: ${source.type}`);
+                throw new Error(`Cannot execute function for source type: ${sourceType}`);
             }
-            
+
             // Parse result (SourceManager returns JSON string)
             const resultObj = JSON.parse(result);
             
@@ -2274,123 +2275,20 @@ plt.rcParams['font.size'] = 8`;
                 });
             }
             
-            // Get code
-            const fileData = this.sequences[fileName];
-            const code = fileData?.code;
-            
+            const sourceType = this.resolveSourceType(source);
+            const code = await this.getCodeForSequence(fileName, source);
             let result;
-            if (source.type === 'local_file' || source.type === 'built-in' || source.type === 'github_raw' || source.type === 'remote_file' || source.type === 'github_folder') {
-                result = await pyodide.runPythonAsync(`
-import json
-import sys
-import matplotlib.pyplot as plt
-import __main__
-import pypulseq as pp
-from seq_source_manager import SourceManager
-
-print("PYTHON (popup): Execution starting...")
-# Configure matplotlib
-plt.close('all')
-plt.ion()
-${themeCode}
-
-# Temporarily disable plotting during code execution to prevent hanging
-_orig_plot, _orig_show = pp.Sequence.plot, plt.show
-pp.Sequence.plot = plt.show = lambda *args, **kwargs: None
-
-try:
-    # Execute the function
-    print(f"PYTHON (popup): Calling manager.execute_function for ${functionName}")
-    manager = SourceManager()
-    result = manager.execute_function(
-        module_path=None,
-        function_name='${functionName}',
-        code=${JSON.stringify(code)},
-        args_dict=${JSON.stringify(argsDict)}
-    )
-    print(f"PYTHON (popup): Result from execute_function: {result}")
-finally:
-    # Restore plotting functions
-    pp.Sequence.plot, plt.show = _orig_plot, _orig_show
-
-# Get sequence from SourceManager._last_sequence (stored by execute_function)
-seq = getattr(SourceManager, '_last_sequence', None)
-print(f"PYTHON (popup): Found sequence object: {seq is not None}")
-
-# Ensure pypulseq is patched (SourceManager re-imports may have lost it)
-if hasattr(sys, '_pp_patch_func'):
-    print("PYTHON (popup): Re-applying patches...")
-    sys._pp_patch_func()
-
-# Plot if sequence found
-if seq is not None:
-    print(f"PYTHON (popup): Calling seq.plot(plot_speed='${plotSpeed}')")
-    plt.close('all')
-    seq.plot(plot_now=False, plot_speed="${plotSpeed}")
-    print("PYTHON (popup): Plot command finished, calling plt.show()")
-    plt.show()
-    print("PYTHON (popup): plt.show() returned")
-else:
-    print("PYTHON ERROR (popup): No sequence found")
-
-result
-`);
-            } else if (source.type === 'pyodide_module') {
-                const modulePath = source.fullModulePath || source.module;
-                result = await pyodide.runPythonAsync(`
-import json
-import sys
-import matplotlib.pyplot as plt
-import __main__
-import pypulseq as pp
-from seq_source_manager import SourceManager
-
-# Configure matplotlib
-plt.close('all')
-plt.ion()
-${themeCode}
-
-# Temporarily disable plotting during code execution to prevent hanging
-_orig_plot, _orig_show = pp.Sequence.plot, plt.show
-pp.Sequence.plot = plt.show = lambda *args, **kwargs: None
-
-try:
-    # Execute the function
-    manager = SourceManager()
-    result = manager.execute_function(
-        module_path='${modulePath}',
-        function_name='${functionName}',
-        code=None,
-        args_dict=${JSON.stringify(argsDict)}
-    )
-finally:
-    # Restore plotting functions
-    pp.Sequence.plot, plt.show = _orig_plot, _orig_show
-
-# Get sequence from SourceManager._last_sequence (stored by execute_function)
-seq = getattr(SourceManager, '_last_sequence', None)
-
-# Ensure pypulseq is patched (SourceManager re-imports may have lost it)
-if hasattr(sys, '_pp_patch_func'):
-    sys._pp_patch_func()
-
-# Plot if sequence found
-if seq is not None:
-    if not ${silent ? 'True' : 'False'}:
-        plt.close('all')
-        seq.plot(plot_now=False, plot_speed="${plotSpeed}")
-        plt.show()
-    else:
-        print("Sequence generated (silent mode)")
-else:
-    print("No sequence found")
-
-result
-`);
+            if (code !== null) {
+                const script = this.buildExecuteScript({ sourceType: 'file_based', code, modulePath: '', functionName, argsDict, silent, themeCode, plotSpeed, debug: true });
+                result = await pyodide.runPythonAsync(script);
+            } else if (sourceType === 'pyodide_module') {
+                const modulePath = source.fullModulePath || source.module || source.path;
+                const script = this.buildExecuteScript({ sourceType: 'pyodide_module', code: null, modulePath, functionName, argsDict, silent, themeCode, plotSpeed, debug: true });
+                result = await pyodide.runPythonAsync(script);
             } else {
-                throw new Error(`Cannot execute function for source type: ${source.type}`);
+                throw new Error(`Cannot execute function for source type: ${sourceType}`);
             }
-            
+
             // Final sweep for any matplotlib figures
             setTimeout(() => {
                 document.querySelectorAll('div.ui-dialog, div[id^="matplotlib_"], div:has(> canvas)').forEach(el => {
@@ -2399,7 +2297,7 @@ result
                     }
                 });
             }, 800);
-            
+
         } catch (error) {
             console.error('Error executing function in popup:', error);
             let errorMsg = error.message || String(error);
@@ -2513,9 +2411,7 @@ sources = ${sourcesJson.replace(/"([^"]+)":/g, "'$1':").replace(/true/g, 'True')
         const info = document.createElement('div');
         info.innerHTML = `
             <p style="margin: 0 0 1rem 0; color: var(--text-secondary, #aaa); font-size: 0.875rem;">
-                Define sources as a Python list. Each source should have: <code>name</code>, <code>type</code>, 
-                <code>module</code> (for pyodide_module), <code>url</code> (for github), <code>path</code> (for built-in/local_file), 
-                and <code>dependencies</code> array.
+                Define sources as a Python list. Each source should have: <code>type</code> ("file" | "folder" | "module"), <code>path</code>, optional <code>name</code> (tree label), <code>seq_func</code> or <code>base_sequence</code> (entry point), <code>dependencies</code>.
             </p>
         `;
         
@@ -2666,9 +2562,8 @@ sources = ${sourcesJson.replace(/"([^"]+)":/g, "'$1':").replace(/true/g, 'True')
 
 sources = [
     {
-        'name': 'RARE 2D (Playground)',
-        'type': 'built-in',
-        'path': 'built-in-seq/mr0_rare_2d_seq.py',
+        'path': 'built_in_seq/mr0_rare_2d_seq.py',
+        'seq_func': 'seq_RARE_2D',
         'dependencies': ['pypulseq']
     }
 ]`;
@@ -2725,6 +2620,10 @@ exec(${JSON.stringify(sourceManagerCode)}, seq_source_manager.__dict__)
         await this.loadSourcesFromConfig(configCode);
     }
     
+    async getUserFiles() {
+        return [];
+    }
+
     async loadSourcesFromConfig(configCode) {
         if (!this.config.pyodide) {
             throw new Error('Pyodide not available');
@@ -2783,6 +2682,7 @@ _result if _result else json.dumps({'error': 'No result returned from Python cod
         
         // Load sequences from all sources
         this.config.sources = sources;
+        
         await this.loadSequences();
         
         // Render the tree
@@ -2802,26 +2702,78 @@ _result if _result else json.dumps({'error': 'No result returned from Python cod
         
         // Fallback template if file doesn't exist
         return `# Sources configuration for sequence explorer
-# Define sources as a list of dictionaries
+# Each source: type ("file" | "folder" | "module"), path, optional name (tree label), seq_func (entry point), dependencies.
 
 sources = [
     {
-        'name': 'RARE 2D (Playground)',
-        'type': 'built-in',
-        'path': 'built-in-seq/mr0_rare_2d_seq.py',
+        'type': 'file',
+        'name': 'Built-in',
+        'path': 'built_in_seq/mr0_rare_2d_seq.py',
+        'seq_func': 'seq_RARE_2D',
         'dependencies': ['pypulseq']
     }
 ]`;
     }
     
-    generateTOMLPreamble(fileName, source) {
-        // Generate TOML preamble with dependencies
-        const deps = source.dependencies || [];
-        
-        // Format dependencies for TOML
+    /**
+     * Get canonical sequence metadata: seq_func_file, seq_func (call target), type.
+     * For protocols, source.seq_func_file / source.seq_func are the base we call.
+     */
+    getSequenceMetadata(fileName, source, functionName) {
+        const pathOrModule = source?.path || fileName;
+        const isModule = !!(
+            source?.fullModulePath ||
+            (typeof pathOrModule === 'string' &&
+                !pathOrModule.includes('/') &&
+                !pathOrModule.endsWith('.py') &&
+                pathOrModule.includes('.'))
+        );
+        if (isModule) {
+            const seqFuncFile = (source?.fullModulePath || source?.module || pathOrModule || '').replace(/\.py$/i, '');
+            const func = source?.seq_func ?? source?.base_sequence ?? functionName ?? 'main';
+            return { seq_func_file: seqFuncFile, seq_func: func, type: 'module' };
+        }
+        const seqFuncFile = source?.seq_func_file ?? source?.path ?? fileName;
+        const func = source?.seq_func ?? source?.base_sequence ?? functionName ?? 'main';
+        return { seq_func_file: seqFuncFile, seq_func: func, type: 'file' };
+    }
+
+    /**
+     * Build the Python import statement for a sequence (used in protocol generation).
+     * @param {{ seq_func_file: string, seq_func: string, type: string }} meta - from getSequenceMetadata
+     * @returns {string} Python import statement
+     */
+    buildImportStatement(meta) {
+        if (meta.type === 'module') {
+            return `from ${meta.seq_func_file} import ${meta.seq_func}`;
+        }
+        const normPath = String(meta.seq_func_file).replace(/^\//, '');
+        const slash = normPath.lastIndexOf('/');
+        const importDir = slash >= 0 ? normPath.slice(0, slash) : '';
+        const moduleName = (slash >= 0 ? normPath.slice(slash + 1) : normPath).replace(/\.py$/i, '');
+        if (importDir === 'built_in_seq') {
+            return `from built_in_seq.${moduleName} import ${meta.seq_func}`;
+        }
+        if (importDir) {
+            return `import sys\nif '${importDir}' not in sys.path:\n    sys.path.insert(0, '${importDir}')\nfrom ${moduleName} import ${meta.seq_func}`;
+        }
+        return `from ${moduleName} import ${meta.seq_func}`;
+    }
+
+    /**
+     * TOML preamble: only seq_func_file and seq_func (call target). No protocol file/name in TOML.
+     * @param {object} [options] - Optional: { kind: 'sequence'|'protocol', seq_func_file: string, seq_func: string } for protocol call target
+     */
+    generateTOMLPreamble(fileName, source, functionName, options = {}) {
+        const deps = source?.dependencies || [];
+        const meta = this.getSequenceMetadata(fileName, source, functionName);
+        const path = source?.path || '';
+        const kind = options.kind ?? (path.startsWith('user/prot/') ? 'protocol' : 'sequence');
+        const seqFuncFile = (kind === 'protocol' && options.seq_func_file != null) ? options.seq_func_file : meta.seq_func_file;
+        const seqFunc = (kind === 'protocol' && options.seq_func != null) ? options.seq_func : meta.seq_func;
+
         const depsLines = deps.map(dep => {
             if (typeof dep === 'string') {
-                // Handle version constraints: "numpy>=2.0.0" -> 'numpy = ">=2.0.0"'
                 if (dep.includes('>=') || dep.includes('==') || dep.includes('!=') || dep.includes('~=')) {
                     const parts = dep.match(/^([^>=!~]+)(.*)$/);
                     if (parts) {
@@ -2835,16 +2787,17 @@ sources = [
             }
             return `    ${dep} = "*"`;
         }).join('\n');
-        
+
         return `# Source configuration (TOML format)
 _source_config_toml = """
 [dependencies]
 ${depsLines}
 
 [metadata]
-name = "${fileName}"
-type = "user"
-description = "User adjusted file"
+kind = "${kind}"
+seq_func_file = "${seqFuncFile}"
+seq_func = "${seqFunc}"
+type = "${meta.type}"
 """
 
 # Parse and use when needed:
@@ -2861,10 +2814,12 @@ description = "User adjusted file"
         let originalCode = fileData?.code;
         
         if (!originalCode) {
-            // For module sources, get the full module source file
-            if (source.type === 'pyodide_module' && this.config.pyodide) {
+            const path = source?.path || '';
+            const isModule = source.type === 'module' || source.type === 'pyodide_module' || !!source.fullModulePath ||
+                (typeof path === 'string' && !path.includes('/') && !path.endsWith('.py') && path.includes('.'));
+            if (isModule && this.config.pyodide) {
                 try {
-                    const modulePath = source.fullModulePath || source.module;
+                    const modulePath = source.fullModulePath || source.module || source.path;
                     
                     await this.ensureSourceManager();
                     // Get the full module source file
@@ -2916,45 +2871,158 @@ json.dumps(_result)
         return originalCode;
     }
     
-    parseTOMLConfig(tomlString) {
-        // Simple TOML parser for our specific format (or use a library)
-        // For now, extract dependencies manually
-        const deps = {};
-        const metadata = {};
-        
-        const lines = tomlString.split('\n');
-        let inDependencies = false;
-        let inMetadata = false;
-        
-        for (const line of lines) {
-            const trimmed = line.trim();
-            if (trimmed === '[dependencies]') {
-                inDependencies = true;
-                inMetadata = false;
-                continue;
-            }
-            if (trimmed === '[metadata]') {
-                inDependencies = false;
-                inMetadata = true;
-                continue;
-            }
-            if (trimmed.startsWith('[') || trimmed === '') continue;
-            
-            const match = trimmed.match(/^(\w+)\s*=\s*"?(.*?)"?$/);
-            if (match) {
-                const key = match[1];
-                const value = match[2].replace(/^"|"$/g, '');
-                if (inDependencies) {
-                    deps[key] = value;
-                } else if (inMetadata) {
-                    metadata[key] = value;
-                }
-            }
+    /**
+     * Parse TOML preamble string via Python (tomllib/tomli). Requires Pyodide.
+     * Expected TOML format: [dependencies] and [metadata] sections; metadata: kind, seq_func_file,
+     * seq_func (call target), type; optional description (used for save and Save As default name).
+     * @param {string} tomlString - Raw TOML string (e.g. from _source_config_toml in code)
+     * @returns {Promise<{ dependencies: Object, metadata: Object }>}
+     */
+    async parseTOMLConfig(tomlString) {
+        const pyodide = this.config?.pyodide;
+        if (!pyodide) {
+            throw new Error('Pyodide required to parse TOML');
         }
-        
-        return { dependencies: deps, metadata };
+        // Pass TOML via globals to avoid embedding in code (backslashes/quotes would break json.loads)
+        pyodide.globals.set('_toml_payload', tomlString);
+        const result = await pyodide.runPythonAsync(`
+from seq_source_manager import parse_toml_config
+parse_toml_config(_toml_payload)
+`);
+        return JSON.parse(result);
+    }
+
+    async storeUserFile(path, code) {
+        if (!this.config.pyodide) {
+            throw new Error('Pyodide not available');
+        }
+        await this.config.pyodide.runPythonAsync(`
+import sys
+import os
+if not hasattr(sys.modules['__main__'], '_user_edited_files'):
+    sys.modules['__main__']._user_edited_files = {}
+_code = ${JSON.stringify(code)}
+sys.modules['__main__']._user_edited_files['${path}'] = _code
+dir_path = os.path.dirname('${path}')
+if dir_path and not os.path.exists(dir_path):
+    os.makedirs(dir_path)
+with open('${path}', 'w', encoding='utf-8') as f:
+    f.write(_code)
+`);
     }
     
+    async saveProtocolSnapshot(protocolName) {
+        if (!this.selectedSequence) {
+            console.warn('Cannot save protocol: No function selected');
+            return null;
+        }
+
+        // 1. Gather Parameters
+        const params = {};
+        const paramsRoot = this.paramsTarget || this.container;
+        
+        if (this.functionParams) {
+            this.functionParams.forEach(param => {
+                const input = paramsRoot.querySelector(`#seq-param-${param.name}`);
+                if (!input) return;
+                
+                let valExpr;
+                if (param.type === 'bool') {
+                    valExpr = input.checked ? 'True' : 'False';
+                } else {
+                    const inputValue = input.value.trim();
+                    if (inputValue === '') return; // Use default
+                    
+                    if (param.type === 'int' || param.type === 'float') {
+                        valExpr = inputValue;
+                    } else if (param.type === 'list' || param.type === 'ndarray') {
+                        valExpr = `np.array(${inputValue})`;
+                    } else if (param.type === 'str') {
+                        valExpr = `"${inputValue}"`;
+                    } else {
+                        valExpr = inputValue;
+                    }
+                }
+                params[param.name] = valExpr;
+            });
+        }
+
+        // 2. Resolve call target (seq_func_file / seq_func = what we call; for protocols always the base)
+        const { fileName, functionName: functionFromExplorer, source } = this.selectedSequence;
+        const meta = this.getSequenceMetadata(fileName, source, functionFromExplorer);
+        const callTargetFile = source?.seq_func_file ?? meta.seq_func_file;
+        const callTargetFunc = source?.seq_func ?? meta.seq_func;
+        const callMeta = { seq_func_file: callTargetFile, seq_func: callTargetFunc, type: meta.type };
+        const importStmt = this.buildImportStatement(callMeta);
+
+        const paramStrs = Object.entries(params).map(([k, v]) => `${k}=${v}`);
+        const signature = paramStrs.join(',\n    ');
+
+        const shortName = callTargetFunc.startsWith('seq_')
+            ? 'prot_' + callTargetFunc.slice(4)
+            : (callTargetFunc.startsWith('prot_') ? callTargetFunc : 'prot_' + callTargetFunc);
+        const filePrefix = (protocolName != null && protocolName !== true && String(protocolName).match(/^\d+$/))
+            ? protocolName + '_'
+            : '';
+        const finalFileName = `user/prot/${filePrefix}${shortName}.py`;
+        const safeFunctionName = shortName;
+
+        const preamble = this.generateTOMLPreamble(fileName, source, functionFromExplorer, {
+            kind: 'protocol',
+            seq_func_file: callTargetFile,
+            seq_func: callTargetFunc
+        });
+        const code = preamble + `
+import numpy as np
+import pypulseq as pp
+${importStmt}
+
+def ${safeFunctionName}(
+    ${signature}
+):
+    kwargs = locals().copy()
+    return ${callTargetFunc}(**kwargs)
+`.trim();
+
+        // 3. Save silently
+        
+        try {
+            await this.storeUserFile(finalFileName, code);
+
+            const protocolLabel = this.getProtocolDisplayNameFromSeqFuncFile(callTargetFile) || finalFileName.split('/').pop().replace(/\.py$/, '');
+            const newSource = {
+                name: 'User Protocols',
+                itemKind: 'protocol',
+                seq_func_file: callTargetFile,
+                seq_func: callTargetFunc,
+                type: 'file',
+                path: finalFileName,
+                description: 'Protocol Snapshot',
+                isUserEdited: true,
+                displayName: filePrefix ? filePrefix + protocolLabel : protocolLabel
+            };
+            
+            // Update config
+            const sourceIndex = this.config.sources.findIndex(s => this.getSourcePath(s) === finalFileName);
+            if (sourceIndex >= 0) {
+                this.config.sources[sourceIndex] = newSource;
+            } else {
+                this.config.sources.push(newSource);
+            }
+            
+            // Parse and refresh
+            await this.parseFile(finalFileName, code, newSource);
+            this.renderTree();
+            console.log('Protocol snapshot saved:', shortName);
+            return finalFileName;
+            
+        } catch (e) {
+            console.error('Error saving protocol snapshot:', e);
+            return null;
+        }
+    }
+
+
     async showCodeEditor() {
         if (!this.selectedSequence) {
             this.showStatus('Please select a function first', 'error');
@@ -2972,8 +3040,7 @@ json.dumps(_result)
         
         let fullCode = originalCode;
         if (!hasTOML) {
-            // Add TOML preamble if not present
-            const preamble = this.generateTOMLPreamble(fileName, source);
+            const preamble = this.generateTOMLPreamble(fileName, source, functionName);
             fullCode = preamble + originalCode;
         }
         
@@ -3071,69 +3138,59 @@ json.dumps(_result)
         
         // Helper function to save sequence
         const saveSequence = async (targetFileName, targetName, overwrite = false) => {
-            const code = editor.getValue();
+            let code = editor.getValue();
             if (!code.trim()) {
                 this.showStatus('Code cannot be empty', 'error');
                 return false;
             }
             
-            // Extract TOML config from code
+            // Extract TOML config from code (allow old minimal format)
             const tomlMatch = code.match(/_source_config_toml = """([\s\S]*?)"""/);
             if (!tomlMatch) {
                 this.showStatus('TOML configuration not found in code', 'error');
                 return false;
             }
             
-            const tomlConfig = this.parseTOMLConfig(tomlMatch[1]);
+            const tomlConfig = await this.parseTOMLConfig(tomlMatch[1]);
             const metadata = tomlConfig.metadata;
+            const seqFunc = metadata.seq_func ?? metadata.base_sequence ?? functionName;
+            const seqFuncFile = metadata.seq_func_file ?? metadata.base_seq_func_file ?? '';
             const deps = Object.keys(tomlConfig.dependencies).map(key => {
                 const val = tomlConfig.dependencies[key];
                 if (val === '*') return key;
                 return `${key}${val}`;
             });
-            
-            // Use targetName as the display name and filename
-            const displayName = targetName || metadata.name || `${fileName}_edited`;
-            // Sanitize the name for use as filename
+
+            const displayName = targetName || seqFuncFile || metadata.name || `${fileName}_edited`;
             const sanitizedName = sanitizeFileName(displayName);
             const baseFileName = sanitizedName.endsWith('.py') ? sanitizedName : `${sanitizedName}.py`;
-            // Store user-edited files in user/ directory to avoid conflicts
-            const finalFileName = `user/${baseFileName}`;
-            
-            // Update TOML metadata with the display name
-            metadata.name = displayName;
-            
+            const finalFileName = `user/seq/${baseFileName}`;
+
+            const saveSource = { path: finalFileName, dependencies: deps };
+            const preamble = this.generateTOMLPreamble(finalFileName, saveSource, seqFunc, { kind: 'sequence' });
+            const tomlBlockRegex = /# Source configuration \(TOML format\)\n_source_config_toml = """[\s\S]*?"""\n\n(?:#.*\n)*\n*/;
+            code = code.replace(tomlBlockRegex, preamble);
+
             const newSource = {
-                name: 'User Refined',  // All user-edited files grouped under "User Refined"
-                type: 'local_file',
+                name: 'User Refined',
+                itemKind: 'sequence',
                 path: finalFileName,
+                seq_func_file: finalFileName,
+                seq_func: seqFunc,
+                type: 'file',
                 description: metadata.description || 'User edited sequence',
                 dependencies: deps,
                 isUserEdited: true,
-                displayName: displayName  // Store the original display name
+                displayName: displayName
             };
             
             if (this.config.pyodide) {
                 try {
-                    // Store code in Python memory
-                    await this.config.pyodide.runPythonAsync(`
-import sys
-
-if not hasattr(sys.modules['__main__'], '_user_edited_files'):
-    sys.modules['__main__']._user_edited_files = {}
-sys.modules['__main__']._user_edited_files['${finalFileName}'] = ${JSON.stringify(code)}
-`);
-                    
-                    // Store in localStorage
-                    const storageKey = `seq_user_edited_${finalFileName}`;
-                    localStorage.setItem(storageKey, JSON.stringify({
-                        code: code,
-                        source: newSource,
-                        timestamp: new Date().toISOString()
-                    }));
+                    // Store code in Python memory (with normalized TOML)
+                    await this.storeUserFile(finalFileName, code);
                     
                     // Update or add source in config
-                    const sourceIndex = this.config.sources.findIndex(s => s.path === finalFileName);
+                    const sourceIndex = this.config.sources.findIndex(s => this.getSourcePath(s) === finalFileName);
                     if (sourceIndex >= 0) {
                         // Update existing source
                         this.config.sources[sourceIndex] = newSource;
@@ -3149,9 +3206,11 @@ sys.modules['__main__']._user_edited_files['${finalFileName}'] = ${JSON.stringif
                     const fileData = this.sequences[finalFileName];
                     if (fileData && fileData.functions.length > 0) {
                         const func = fileData.functions.find(f => f.name === functionName) || fileData.functions[0];
+                        const displayName = newSource?.displayName || this.getProtocolDisplayNameFromSeqFuncFile(this.getPathForDisplayName(finalFileName, newSource)) || (newSource?.path || finalFileName).split('/').pop().replace(/\.py$/, '');
                         this.selectedSequence = { 
                             fileName: finalFileName, 
                             functionName: func.name, 
+                            displayName,
                             ...func,
                             source: newSource
                         };
@@ -3179,31 +3238,31 @@ sys.modules['__main__']._user_edited_files['${finalFileName}'] = ${JSON.stringif
         
         // Save As handler (opens file browser dialog)
         saveAsBtn.onclick = async () => {
-            // Extract current name from TOML or use fileName as default
             let defaultName = fileName;
             try {
                 const code = editor.getValue();
                 const tomlMatch = code.match(/_source_config_toml = """([\s\S]*?)"""/);
                 if (tomlMatch) {
-                    const tomlConfig = this.parseTOMLConfig(tomlMatch[1]);
-                    if (tomlConfig.metadata.name) {
-                        defaultName = tomlConfig.metadata.name;
+                    const tomlConfig = await this.parseTOMLConfig(tomlMatch[1]);
+                    if (tomlConfig.metadata.seq_func_file) {
+                        defaultName = tomlConfig.metadata.seq_func_file;
                     }
                 }
             } catch (e) {
                 // Use fileName as fallback
             }
-            
-            // Remove .py extension and user/ prefix if present
+
             if (defaultName.endsWith('.py')) {
                 defaultName = defaultName.slice(0, -3);
             }
             if (defaultName.startsWith('user/')) {
                 defaultName = defaultName.slice(5);
             }
-            
-            // Get all existing user files
-            const existingFiles = await this.getUserFiles();
+            defaultName = this.getProtocolDisplayNameFromSeqFuncFile(defaultName) || defaultName;
+
+            // Get existing user sequence files only (Save As is for sequences; protocols live in user/prot/)
+            const allUserFiles = await this.getUserFiles();
+            const existingFiles = allUserFiles.filter(f => f.path.startsWith('user/seq/'));
             
             // Create dialog
             const dialog = document.createElement('div');
@@ -3235,7 +3294,7 @@ sys.modules['__main__']._user_edited_files['${finalFileName}'] = ${JSON.stringif
             `;
             
             const dialogTitle = document.createElement('h3');
-            dialogTitle.textContent = 'Save As - User Files';
+            dialogTitle.textContent = 'Save As - User Sequences';
             dialogTitle.style.cssText = 'margin: 0 0 1rem 0; color: var(--accent, #4a9eff);';
             
             // File list container
@@ -3294,7 +3353,9 @@ sys.modules['__main__']._user_edited_files['${finalFileName}'] = ${JSON.stringif
                 };
                 
                 fileItem.onclick = () => {
-                    input.value = fileInfo.displayName || fileInfo.name;
+                    let name = fileInfo.displayName || fileInfo.name;
+                    if (name.endsWith('.py')) name = name.slice(0, -3);
+                    input.value = name;
                     input.focus();
                     input.select();
                 };
@@ -3361,7 +3422,7 @@ sys.modules['__main__']._user_edited_files['${finalFileName}'] = ${JSON.stringif
                 // Check if file already exists
                 const sanitizedName = sanitizeFileName(newName);
                 const baseFileName = sanitizedName.endsWith('.py') ? sanitizedName : `${sanitizedName}.py`;
-                const finalFileName = `user/${baseFileName}`;
+                const finalFileName = `user/seq/${baseFileName}`;
                 
                 const fileExists = existingFiles.some(f => f.path === finalFileName);
                 if (fileExists && !confirm(`File "${newName}" already exists. Overwrite?`)) {
@@ -3435,7 +3496,7 @@ sys.modules['__main__']._user_edited_files['${finalFileName}'] = ${JSON.stringif
     }
     
     async getUserFiles() {
-        // Get all user-edited files from both Python memory and localStorage
+        // Get all user-edited files from Python memory only
         const files = [];
         
         // Get from Python memory
@@ -3468,28 +3529,6 @@ json.dumps(list(files.keys()))
             }
         }
         
-        // Get from localStorage
-        for (let i = 0; i < localStorage.length; i++) {
-            const key = localStorage.key(i);
-            if (key && key.startsWith('seq_user_edited_user/')) {
-                try {
-                    const data = JSON.parse(localStorage.getItem(key));
-                    if (data && data.source) {
-                        const path = data.source.path;
-                        if (!files.find(f => f.path === path)) {
-                            files.push({
-                                path: path,
-                                name: path.split('/').pop(),
-                                displayName: data.source.displayName || path.split('/').pop().replace('.py', '')
-                            });
-                        }
-                    }
-                } catch (e) {
-                    console.warn('Could not parse localStorage item:', key, e);
-                }
-            }
-        }
-        
         // Sort by display name
         files.sort((a, b) => (a.displayName || a.name).localeCompare(b.displayName || b.name));
         
@@ -3512,10 +3551,6 @@ if hasattr(sys.modules['__main__'], '_user_edited_files'):
                 console.warn('Could not delete from Python memory:', e);
             }
         }
-        
-        // Delete from localStorage
-        const storageKey = `seq_user_edited_${filePath}`;
-        localStorage.removeItem(storageKey);
         
         // Remove from sources config
         const sourceIndex = this.config.sources.findIndex(s => s.path === filePath);

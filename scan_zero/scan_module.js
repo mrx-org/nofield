@@ -40,7 +40,7 @@ export class ScanModule {
                         <span class="icon">▶</span> SCAN
                     </button>
                     <div class="active-info">
-                        Ready: <span id="ready-seq-name">${this.currentSequence ? this.currentSequence.name : 'None'}</span>
+                        Ready: <span id="ready-seq-name">${this.currentSequence ? (this.currentSequence.displayName || this.currentSequence.name) : 'None'}</span>
                     </div>
                 </div>
                 <div class="scan-queue" id="scan-queue-list">
@@ -58,7 +58,7 @@ export class ScanModule {
     updateHeader() {
         if (!this.container) return;
         const el = this.container.querySelector('#ready-seq-name');
-        if (el) el.textContent = this.currentSequence ? this.currentSequence.name : 'None';
+        if (el) el.textContent = this.currentSequence ? (this.currentSequence.displayName || this.currentSequence.name) : 'None';
     }
 
     async startScan() {
@@ -67,12 +67,18 @@ export class ScanModule {
             return;
         }
 
-        // 1. Trigger sequence execution to ensure SourceManager has the latest data
-        // We use silent=true to prevent mode switching and plotting during the scan process
+        this.scanCounter++;
+        const now = new Date();
+        const pad = (n) => String(n).padStart(2, '0');
+        const ts = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
+        const seqSafeName = ((this.currentSequence.displayName || this.currentSequence.name) || "Scan").replace(/\s+/g, '_');
+        const baseName = `scan_${this.scanCounter}_${ts}_${seqSafeName}`;
+
+        // 1. Trigger sequence execution; snapshot saved as e.g. user/1_prot_gre.py (scan number + short name)
         if (window.seqExplorer) {
             try {
-                console.log("ScanModule: Triggering sequence execution (silent) for:", this.currentSequence.name);
-                const result = await window.seqExplorer.executeFunction(true);
+                console.log("ScanModule: Triggering sequence execution (silent) with protocol save, scan", this.scanCounter);
+                const result = await window.seqExplorer.executeFunction(true, this.scanCounter);
                 console.log("ScanModule: Sequence execution result:", result);
             } catch (e) {
                 console.error("Sequence execution failed before scan:", e);
@@ -81,18 +87,11 @@ export class ScanModule {
             }
         }
 
-        this.scanCounter++;
-        const now = new Date();
-        const pad = (n) => String(n).padStart(2, '0');
-        const ts = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
-        const seqSafeName = (this.currentSequence.name || "Scan").replace(/\s+/g, '_');
-        const baseName = `scan_${this.scanCounter}_${ts}_${seqSafeName}`;
-
         const job = {
             id: 'job_' + now.getTime(),
             scanNumber: this.scanCounter,
             baseName: baseName,
-            name: this.currentSequence.name || "Untitled Scan",
+            name: (this.currentSequence.displayName || this.currentSequence.name) || "Untitled Scan",
             protocol: "Standard Protocol",
             status: 'pending',
             timestamp: `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`,

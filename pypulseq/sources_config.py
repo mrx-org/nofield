@@ -1,38 +1,40 @@
 # Sources configuration for sequence explorer
-# Define sources as a list of dictionaries
+# Each source must have: type ("file" | "folder" | "module"), path (or url), and optionally name (tree label), seq_func (entry point; legacy: base_sequence), dependencies.
 
 sources = [
     {
-        'name': 'mrseq',
-        'type': 'pyodide_module',
-        'module': 'mrseq.scripts',
-        'description': 'Load sequences from installed mrseq package',
+        'type': 'module',
+        'name': 'mrseq.scripts',
+        'path': 'mrseq.scripts',
+        'seq_func': None,
         'dependencies': ['numpy>=2.0.0', 'pypulseq', {'name': 'mrseq', 'deps': False}, 'ismrmrd']
     },
     {
-        'name': 'pypulseq_examples',
-        'type': 'github_folder',
-        'url': 'https://github.com/imr-framework/pypulseq/tree/master/examples/scripts',
-        'description': 'Load examples from pypulseq repository',
+        'type': 'folder',
+        'name': 'pypulseq',
+        'path': 'https://github.com/imr-framework/pypulseq/tree/master/examples/scripts',
+        'seq_func': None,
         'dependencies': ['pypulseq']
     },
     {
-        'name': 'GRE',
-        'type': 'built-in',
-        'path': 'built-in-seq/gre_seq.py',
+        'type': 'file',
+        'name': 'Built-in',
+        'path': 'built_in_seq/gre_seq.py',
+        'seq_func': 'seq_gre',
         'dependencies': ['pypulseq']
     },
     {
-        'name': 'RARE 2D (Playground)',
-        'type': 'built-in',
-        'path': 'built-in-seq/mr0_rare_2d_seq.py',
+        'type': 'file',
+        'name': 'Built-in',
+        'path': 'built_in_seq/mr0_rare_2d_seq.py',
+        'seq_func': 'seq_RARE_2D',
         'dependencies': ['pypulseq']
     },
     {
+        'type': 'file',
         'name': 'MRzero',
-        'type': 'remote_file',
-        'url': 'https://raw.githubusercontent.com/MRsources/MRzero-Core/refs/heads/main/documentation/playground_mr0/mr0_EPI_2D_seq.ipynb',
-        'description': 'EPI 2D sequence from MRzero-Core documentation',
+        'path': 'https://raw.githubusercontent.com/MRsources/MRzero-Core/refs/heads/main/documentation/playground_mr0/mr0_EPI_2D_seq.ipynb',
+        'seq_func': None,
         'dependencies': ['pypulseq']
     }
 ]

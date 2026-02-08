@@ -505,7 +505,7 @@
                     </h2>
                     <div style="margin-bottom: 1rem;">
                         <select id="sequence-selector" style="width: 100%; padding: 0.5rem; background: rgba(255, 255, 255, 0.08); border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-size: 0.875rem; cursor: pointer;">
-                            <option value="built-in-seq/mr0_rare_2d_seq.py">RARE 2D (built-in-seq/mr0_rare_2d_seq.py)</option>
+                            <option value="built_in_seq/mr0_rare_2d_seq.py">RARE 2D (built_in_seq/mr0_rare_2d_seq.py)</option>
                             <option value="write_gre.py">GRE (pypulseq example)</option>
                             <option value="write_epi.py">EPI (pypulseq example)</option>
                             <option value="write_epi_se.py">EPI SE (pypulseq example)</option>
@@ -580,7 +580,7 @@
     <div id="editor-modal" class="editor-modal">
         <div class="editor-container">
             <div class="editor-header">
-                <h3>Edit Python Code (built-in-seq/mr0_rare_2d_seq.py)</h3>
+                <h3>Edit Python Code (built_in_seq/mr0_rare_2d_seq.py)</h3>
                 <div class="editor-actions">
                     <button id="load-default-btn" class="editor-btn editor-btn-secondary">Load Default</button>
                     <button id="save-code-btn" class="editor-btn editor-btn-primary">Save and Close</button>
@@ -599,7 +599,7 @@
         let currentCode = ''; // Store the current Python code
         let defaultCode = ''; // Store the default/original Python code
         let codeEditor = null; // CodeMirror editor instance
-        let currentSequenceType = 'built-in-seq/mr0_rare_2d_seq.py'; // Current selected sequence
+        let currentSequenceType = 'built_in_seq/mr0_rare_2d_seq.py'; // Current selected sequence
         let currentSequenceFunc = null; // For pypulseq example sequences
 
         const statusEl = document.getElementById('status');
@@ -1140,7 +1140,7 @@ json.dumps(versions)
                 
                 // Load the default sequence
                 log('Initialization complete. Loading default sequence...');
-                await loadSequence('built-in-seq/mr0_rare_2d_seq.py');
+                await loadSequence('built_in_seq/mr0_rare_2d_seq.py');
 
             } catch (err) {
                 statusEl.innerText = 'Initialization Error';
@@ -1222,10 +1222,10 @@ json.dumps(versions)
             loaderEl.style.display = 'inline-block';
 
             try {
-                if (sequenceType === 'built-in-seq/mr0_rare_2d_seq.py') {
+                if (sequenceType === 'built_in_seq/mr0_rare_2d_seq.py') {
                     // Load from file
-                    const response = await fetch('built-in-seq/mr0_rare_2d_seq.py?' + Date.now());
-                    if (!response.ok) throw new Error('Failed to fetch built-in-seq/mr0_rare_2d_seq.py');
+                    const response = await fetch('built_in_seq/mr0_rare_2d_seq.py?' + Date.now());
+                    if (!response.ok) throw new Error('Failed to fetch built_in_seq/mr0_rare_2d_seq.py');
                     currentCode = await response.text();
                     defaultCode = currentCode;
                     
@@ -1501,7 +1501,7 @@ else:
                 
                 log(`Current sequence type: ${currentSequenceType}`);
                 
-                if (currentSequenceType === 'built-in-seq/mr0_rare_2d_seq.py') {
+                if (currentSequenceType === 'built_in_seq/mr0_rare_2d_seq.py') {
                     log('Using RARE 2D sequence with parameters');
                     // Use parameter-based sequence
                 let pyArgs = [];

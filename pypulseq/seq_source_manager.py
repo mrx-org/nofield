@@ -13,6 +13,22 @@ import ast
 from types import ModuleType
 from pathlib import Path
 
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
+
+
+def parse_toml_config(toml_string):
+    """
+    Parse TOML preamble string (e.g. from _source_config_toml in sequence files).
+    Returns a JSON string with keys 'dependencies' and 'metadata' for consumption by JS.
+    """
+    data = tomllib.loads(toml_string)
+    dependencies = data.get("dependencies", {})
+    metadata = data.get("metadata", {})
+    return json.dumps({"dependencies": dependencies, "metadata": metadata})
+
 
 class SourceManager:
     """Manages sequence sources and their extraction."""
@@ -417,9 +433,16 @@ class SourceManager:
             Result of function execution (as JSON-serializable string)
         """
         import __main__
+        import os
         import sys
         import importlib
         from types import ModuleType
+
+        # Ensure filesystem root is on path so /built_in_seq can be imported
+        # (protocols wrapping built-in sequences use "from built_in_seq.xxx import seq_xxx")
+        _root = os.path.abspath(os.path.sep)
+        if _root not in sys.path:
+            sys.path.insert(0, _root)
         
         # Clear last sequence to avoid stale data from previous runs
         SourceManager._last_sequence = None

@@ -1,19 +1,3 @@
-# Source configuration (TOML format)
-_source_config_toml = """
-[dependencies]
-    pypulseq = "*"
-
-[metadata]
-name = "write_gre.py"
-type = "user"
-description = "User adjusted file"
-"""
-
-# Parse and use when needed:
-# import tomli
-# config = tomli.loads(_source_config_toml)
-# deps = list(config['dependencies'].keys())
-
 import math
 
 import numpy as np
