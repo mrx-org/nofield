@@ -155,9 +155,22 @@ export class ScanModule {
             if (res && res.destroy) res.destroy();
 
             // 5. Save the actual .seq file to the virtual filesystem
+            // For seq_pulseq_interpreter, copy the original file instead of seq.write()
+            const isInterpreter = this.currentSequence && (this.currentSequence.functionName === 'seq_pulseq_interpreter');
+            let sourceSeqPath = null;
+            if (isInterpreter && window.seqExplorer) {
+                const paramsRoot = window.seqExplorer.paramsTarget || window.seqExplorer.container;
+                const input = paramsRoot ? paramsRoot.querySelector('#seq-param-seq_file') : null;
+                if (input && input.value && input.value.trim()) {
+                    sourceSeqPath = input.value.trim();
+                }
+            }
+            const sourceSeqPathPy = sourceSeqPath != null ? JSON.stringify(sourceSeqPath) : 'None';
+
             const saveResult = await nvMod.pyodide.runPythonAsync(`
 import os
 import sys
+import shutil
 import __main__
 from seq_source_manager import SourceManager
 
@@ -165,24 +178,32 @@ from seq_source_manager import SourceManager
 if not os.path.exists('/outputs'):
     os.makedirs('/outputs')
 
-# Try to get sequence from SourceManager or __main__
-seq = getattr(SourceManager, '_last_sequence', None)
-if not seq and hasattr(__main__, 'seq'):
-    seq = __main__.seq
+vfs_path = os.path.join('/outputs', '${job.baseName}.seq')
+source_seq_path = ${sourceSeqPathPy}
 
 _final_status = "no_sequence"
-if seq:
-    # Use absolute path for the virtual filesystem
-    vfs_path = os.path.join('/outputs', '${job.baseName}.seq')
+if source_seq_path is not None and os.path.exists(source_seq_path):
     try:
-        seq.write(vfs_path)
-        print(f"Successfully saved sequence to {vfs_path}")
+        shutil.copy2(source_seq_path, vfs_path)
+        print(f"Copied .seq file to {vfs_path}")
         _final_status = "success"
     except Exception as e:
-        print(f"Error writing .seq file: {e}")
+        print(f"Error copying .seq file: {e}")
         _final_status = f"error: {e}"
 else:
-    print("Warning: No sequence object found in memory to save.")
+    seq = getattr(SourceManager, '_last_sequence', None)
+    if not seq and hasattr(__main__, 'seq'):
+        seq = __main__.seq
+    if seq:
+        try:
+            seq.write(vfs_path)
+            print(f"Successfully saved sequence to {vfs_path}")
+            _final_status = "success"
+        except Exception as e:
+            print(f"Error writing .seq file: {e}")
+            _final_status = f"error: {e}"
+    else:
+        print("Warning: No sequence object found in memory to save.")
 
 _final_status
             `);

@@ -30,7 +30,9 @@ Since a real MRzero simulation is not yet fully integrated, the current implemen
 4. **Python Execution**: 
     - Uses `nibabel` and `scipy.ndimage.map_coordinates` in Pyodide.
     - Resamples the base volume into the exact grid defined by the FOV box.
-    - **Sequence Export**: The current sequence object in memory is saved as a real `.seq` file in the Pyodide virtual filesystem (`/outputs/scan_[N]_[TS]_[Name].seq`).
+    - **Sequence Export**: A real `.seq` file is written to the Pyodide VFS at `/outputs/scan_[N]_[TS]_[Name].seq`.
+        - **Normal sequences** (e.g. `seq_gre`): The in-memory sequence object is saved via `seq.write(vfs_path)` (from `SourceManager._last_sequence` / `__main__.seq`).
+        - **seq_pulseq_interpreter**: The **original** user-specified `.seq` file (path from the `seq_file` param input) is **copied** to the output path with `shutil.copy2`. This avoids relying on `seq.write()` for sequences loaded via `.read()` and ensures VIEW SEQ and Download work.
 5. **Results**:
     - Generates a Blob URL for the new NIfTI file.
     - Automatically triggers **VIEW SCAN** upon completion.
@@ -41,7 +43,7 @@ Since a real MRzero simulation is not yet fully integrated, the current implemen
 - **Visual Feedback**: Uses a color-coded left border (Green: Done, Yellow: Scanning, Red: Error).
 - **Actions**:
     - **VIEW SCAN**: Loads the NIfTI into Niivue, hides other scans, and switches to **Planning Mode**.
-    - **VIEW SEQ**: Switches the app to **Sequence Mode**, reads the `.seq` file from VFS, and plots it.
+    - **VIEW SEQ**: Switches the app to **Sequence Mode**, reads the `.seq` file from VFS (`/outputs/...`), and plots it. For interpreter scans the file is the copy made at scan time.
     - **Download (↓)**: Exports the `.seq` file to the local machine.
     - **Remove (×)**: Deletes the job from the session queue.
 

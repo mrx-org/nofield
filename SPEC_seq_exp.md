@@ -172,7 +172,7 @@ Protocol files are generated with:
 - Uploaded files live in session-scoped VFS (e.g. `/uploads/`). Temporary VFS is acceptable; no persistence required.
 - Protocols that wrap `seq_pulseq_interpreter` store the `filename` argument as a string (the path or URL). The protocol thus “links” to the seq file via that string. Same session: path still valid; new session: user can re-upload or use a server URL if supported.
 
-**Scan integration:** No change in the scan module. Execution runs `seq_pulseq_interpreter(filename=...)`; the returned sequence is stored in `__main__.seq` and `SourceManager._last_sequence` as for any other sequence, and the existing scan flow uses it.
+**Scan integration:** Execution runs `seq_pulseq_interpreter(seq_file=...)`; the returned sequence is stored in `__main__.seq` and `SourceManager._last_sequence` as for any other sequence. The **Scan Module** treats the interpreter specially when saving the job’s `.seq` file: instead of calling `seq.write()`, it **copies the original** user-specified `.seq` file (path from the `seq_file` param) to `/outputs/scan_[N]_[TS]_[Name].seq`. That way VIEW SEQ and Download always have a valid file (no dependence on pypulseq write/read round-trip).
 
 ---
 
