@@ -103,6 +103,60 @@ Protocol files are generated with:
 - TOML header with `kind = "protocol"`, `seq_func_file` and `seq_func` set to the **call target** (the base sequence), plus dependencies.
 - An import for the base sequence and a `def prot_*(...): return seq_func(**kwargs)` that forwards parameters. No protocol file path or `prot_*` name is written into the TOML.
 
+### 6. Parameter inspection and protocol arguments
+
+**Intent:** The UI builds dynamic parameter controls from the **base sequence**’s function signature. When executing or when saving a protocol, we need to turn UI values into Python argument expressions that the base sequence accepts.
+
+**Inspection (Python, `seq_source_manager.py`) — inspect only:**
+- Parameters are extracted via **inspect only**: get the function (by importing the module or executing the code), then `inspect.signature(func)` and each parameter's default. No AST path; one code path, real runtime types and defaults.
+- **Resolving the function:** For module sources, `importlib.import_module(module_path)` then `getattr(module, function_name)`. For file-based sources, `exec(code, exec_globals)` then get the function from the namespace (or `__main__`).
+- **Type normalization:** All extracted types are normalized before sending to the frontend:
+  - `tuple` and `list` → stored as **type `'list'`**, value converted to a list (so the sequence’s `fov: tuple = (256e-3, 256e-3, 3e-3)` becomes type `'list'` and default `[0.256, 0.256, 0.003]`).
+  - `np.ndarray` → **type `'ndarray'`**, value as list (`.tolist()`).
+  - Other types → type is `type(default).__name__` (e.g. `'int'`, `'float'`, `'bool'`, `'str'`), or `'None'` if no default.
+- Runs when the user selects a sequence in the UI (once per selection). Cost is dominated by import/exec; `inspect.signature()` is negligible. Signature types (e.g. tuple) are normalized to list/ndarray in the UI.
+
+**Protocol argument generation (JS, `seq_explorer.js`):**
+- When building the protocol file or the execute script, UI values are turned into Python expression strings:
+  - `bool` → `'True'` / `'False'`.
+  - `int` / `float` → value as-is (literal).
+  - `list` or `ndarray` → **`np.array(${inputValue})`**, where `inputValue` is the text field content (e.g. `[0.256, 0.256, 0.003]` or `256e-3, 256e-3, 3e-3`). So the **protocol** always passes an array for these, even if the sequence signature was `tuple`.
+  - `str` → value in double quotes.
+  - Other / unknown → value as raw expression.
+- Result: in “edit sequence” the user sees `fov: tuple = (256e-3, 256e-3, 3e-3)`; in the generated protocol they see `fov= np.array([...])`. The base sequence typically accepts both tuple and array, but the representation is inconsistent.
+
+**Possible improvements (for a later revision):**
+- Preserve **tuple** as a distinct type in extraction and in the UI (e.g. type `'tuple'`), and in the protocol generate `tuple(...)` or `(a, b, c)` instead of `np.array(...)` when the sequence parameter is typed as tuple.
+- Or document that we intentionally normalize to list/ndarray and always pass `np.array(...)` so the base sequence receives a numpy array regardless of signature style.
+- Optionally use **annotation** from the source (e.g. `fov: tuple`) when AST/inspect can provide it, so the UI and protocol generator can match the sequence’s declared type.
+
+### 7. seq_pulseq_interpreter
+
+**Intent:** Allow loading a Pulseq `.seq` file (from upload or from a path/URL) and using it as the current sequence for plot and scan, without a separate “interpreter” code path. Integrates with the existing inspect → params → execute flow.
+
+**Approach:** A built-in sequence `seq_pulseq_interpreter(filename=...)` that reads the given path with `pypulseq.Sequence().read(filename)` and returns the sequence. Standard parameter inspection then exposes a single `filename` parameter. A **special parameter type** (`'file'` or `'url'`) is used so the UI can render an upload control in addition to a text field.
+
+**Python (built-in sequence):**
+- Add a built-in file (e.g. `built_in_seq/seq_pulseq_interpreter.py`) with a TOML header and:
+  - `def seq_pulseq_interpreter(filename: Annotated[str, "file"] = "fn.seq"):` (or type alias `SeqFile = Annotated[str, "file"]`).
+  - Implementation: `seq = pp.Sequence(); seq.read(filename); return seq`.
+- Add this file to `sources_config.py` like other built-in sequences.
+
+**Type detection (Python, `seq_source_manager.py`):**
+- In `extract_function_parameters`, after deriving `type_name` from the default value, **optionally** inspect the parameter’s annotation.
+- If the annotation is `typing.Annotated[...]` (use `get_origin` and `get_args`), and the metadata (second element of `get_args`) is the string `"file"` or `"url"`, set `type_name = 'file'` or `'url'` instead of `'str'`.
+- No other inspect logic changes; only this override for annotated params.
+
+**Param UI (JS, `seq_explorer.js`):**
+- In `renderParameterControls`, for `param.type === 'file'` or `param.type === 'url'`: render a **text input** (path/URL) plus an **upload button** (for `'file'`). On file selection: write the file to the Pyodide VFS (e.g. `/uploads/`), ensure the directory exists, and set the text input’s value to that VFS path. The value passed to execute is always a string (path or URL).
+- In all places that build Python argument expressions from params (executeFunction, protocol save, TOML/save): treat `'file'` and `'url'` like `'str'` (quoted string).
+
+**VFS and protocols:**
+- Uploaded files live in session-scoped VFS (e.g. `/uploads/`). Temporary VFS is acceptable; no persistence required.
+- Protocols that wrap `seq_pulseq_interpreter` store the `filename` argument as a string (the path or URL). The protocol thus “links” to the seq file via that string. Same session: path still valid; new session: user can re-upload or use a server URL if supported.
+
+**Scan integration:** No change in the scan module. Execution runs `seq_pulseq_interpreter(filename=...)`; the returned sequence is stored in `__main__.seq` and `SourceManager._last_sequence` as for any other sequence, and the existing scan flow uses it.
+
 ---
 
 *Parse and use when needed:*

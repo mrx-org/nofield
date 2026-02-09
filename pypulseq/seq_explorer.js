@@ -172,6 +172,7 @@ export class SequenceExplorer {
         this.selectedSequence = null;
         this.filterSeqPrefix = this.config.onlySeqPrefix;
         this.installedPackages = new Set(); // Track installed packages to avoid reinstalling
+        this.defaultInterpreterSeqPath = null; // Preloaded default .seq path for interpreter
         
         // Initialize UI
         if (containerId) {
@@ -570,6 +571,15 @@ json.dumps(versions)
         
         await Promise.all(loadPromises);
         
+        // Preload a built-in .seq file into the virtual filesystem for the Pulseq interpreter
+        if (this.config.pyodide) {
+            try {
+                await this.preloadBuiltinInterpreterSeq();
+            } catch (e) {
+                console.warn('Failed to preload built-in interpreter .seq file:', e);
+            }
+        }
+        
         this.renderTree();
         const totalFunctions = Object.values(this.sequences).reduce((sum, file) => sum + file.functions.length, 0);
         const fileCount = Object.keys(this.sequences).length;
@@ -580,6 +590,42 @@ json.dumps(versions)
             this.selectFirstSequence();
         } else {
             this.showStatus('No sequences found. Check console for errors.', 'error');
+        }
+    }
+
+    /**
+     * Preload a built-in single-slice Pulseq .seq file into the Pyodide virtual filesystem
+     * and remember its path as the default for the seq_pulseq_interpreter.
+     */
+    async preloadBuiltinInterpreterSeq() {
+        if (!this.config.pyodide) return;
+        const pyodide = this.config.pyodide;
+        if (!pyodide.FS) {
+            console.warn('Pyodide FS not available to preload interpreter .seq file');
+            return;
+        }
+        try {
+            const url = this.resolvePath('built_in_seq/ute.seq') + '?t=' + Date.now();
+            const response = await fetch(url);
+            if (!response.ok) {
+                console.warn('Failed to fetch built_in_seq/ute.seq for interpreter default:', response.status, response.statusText);
+                return;
+            }
+            const buffer = await response.arrayBuffer();
+            const baseDir = '/uploads';
+            try {
+                if (!pyodide.FS.analyzePath(baseDir).exists) {
+                    pyodide.FS.mkdir(baseDir);
+                }
+            } catch (err) {
+                if (err.code !== 'EEXIST') throw err;
+            }
+            const vfsPath = `${baseDir}/ute.seq`;
+            pyodide.FS.writeFile(vfsPath, new Uint8Array(buffer), { encoding: 'binary' });
+            this.defaultInterpreterSeqPath = vfsPath;
+            console.log('Preloaded built-in interpreter .seq file at', vfsPath);
+        } catch (e) {
+            console.warn('Error preloading built-in interpreter .seq file:', e);
         }
     }
 
@@ -1866,6 +1912,87 @@ json.dumps(_result)
                 input.checked = param.default === true;
                 label.appendChild(input);
                 inputCell.appendChild(label);
+            } else if (param.type === 'file' || param.type === 'url') {
+                const wrapper = document.createElement('div');
+                wrapper.className = "params-file-input-wrapper";
+                wrapper.style.display = 'flex';
+                wrapper.style.gap = '0.25rem';
+                wrapper.style.alignItems = 'center';
+                input = document.createElement('input');
+                input.type = 'text';
+                input.className = "params-input";
+                input.value = param.default !== null && param.default !== undefined ? String(param.default) : '';
+                input.placeholder = param.type === 'file' ? 'Path or upload .seq' : 'URL';
+                input.id = `seq-param-${param.name}`;
+                // For the Pulseq interpreter, always prefer the preloaded built-in .seq file as default
+                if (
+                    param.type === 'file' &&
+                    param.name === 'seq_file' &&
+                    this.selectedSequence &&
+                    (this.selectedSequence.functionName === 'seq_pulseq_interpreter' ||
+                     this.selectedSequence.name === 'seq_pulseq_interpreter')
+                ) {
+                    const fallbackPath = '/uploads/ute.seq';
+                    input.value = this.defaultInterpreterSeqPath || fallbackPath;
+                }
+                wrapper.appendChild(input);
+                if (param.type === 'file' && this.config.pyodide) {
+                    const uploadBtn = document.createElement('button');
+                    uploadBtn.type = 'button';
+                    uploadBtn.className = "params-upload-btn";
+                    uploadBtn.innerHTML = '<i class="bi bi-upload" aria-hidden="true"></i>';
+                    uploadBtn.style.flexShrink = '0';
+                    uploadBtn.style.padding = '0.25rem 0.5rem';
+                    uploadBtn.style.fontSize = '0.75rem';
+                    uploadBtn.style.cursor = 'pointer';
+                    uploadBtn.title = 'Upload new .seq file.';
+                    uploadBtn.addEventListener('click', () => {
+                        const fileInput = document.createElement('input');
+                        fileInput.type = 'file';
+                        fileInput.accept = '.seq';
+                        fileInput.style.display = 'none';
+                        fileInput.onchange = async (e) => {
+                            const file = e.target.files?.[0];
+                            if (!file) return;
+                            const pyodide = this.config.pyodide;
+                            if (!pyodide?.FS) {
+                                console.warn('Pyodide FS not available for upload');
+                                return;
+                            }
+                            const baseDir = '/uploads';
+                            try {
+                                if (!pyodide.FS.analyzePath(baseDir).exists) {
+                                    pyodide.FS.mkdir(baseDir);
+                                }
+                            } catch (err) {
+                                if (err.code !== 'EEXIST') throw err;
+                            }
+                            const safeName = file.name
+                                .replace(/[/\\:?*\[\]"]/g, '_')
+                                .replace(/_+/g, '_')
+                                .replace(/^_|_$/g, '') || 'uploaded.seq';
+                            const vfsPath = `${baseDir}/${safeName}`;
+                            const reader = new FileReader();
+                            reader.onload = (ev) => {
+                                try {
+                                    const buf = ev.target?.result;
+                                    if (buf instanceof ArrayBuffer) {
+                                        pyodide.FS.writeFile(vfsPath, new Uint8Array(buf), { encoding: 'binary' });
+                                        input.value = vfsPath;
+                                    }
+                                } catch (writeErr) {
+                                    console.error('Failed to write uploaded file to VFS:', writeErr);
+                                }
+                            };
+                            reader.readAsArrayBuffer(file);
+                            fileInput.remove();
+                        };
+                        document.body.appendChild(fileInput);
+                        fileInput.click();
+                    });
+                    wrapper.appendChild(uploadBtn);
+                }
+                inputCell.appendChild(wrapper);
             } else {
                 input = document.createElement('input');
                 input.className = "params-input";
@@ -1885,7 +2012,9 @@ json.dumps(_result)
                 inputCell.appendChild(input);
             }
             
-            input.id = `seq-param-${param.name}`;
+            if (input.id !== `seq-param-${param.name}`) {
+                input.id = `seq-param-${param.name}`;
+            }
             
             if (paramDocs[param.name]) {
                 input.title = paramDocs[param.name];
@@ -2011,10 +2140,10 @@ json.dumps(_result)
                         
                         if (param.type === 'int' || param.type === 'float') {
                             valExpr = inputValue;
-                        } else if (param.type === 'list' || param.type === 'ndarray') {
+                        } else                         if (param.type === 'list' || param.type === 'ndarray') {
                             valExpr = `np.array(${inputValue})`;
-                        } else if (param.type === 'str') {
-                            valExpr = `"${inputValue}"`;
+                        } else if (param.type === 'str' || param.type === 'file' || param.type === 'url') {
+                            valExpr = `"${inputValue.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
                         } else {
                             valExpr = inputValue;
                         }
@@ -2254,10 +2383,10 @@ plt.rcParams['font.size'] = 8`;
                         
                         if (param.type === 'int' || param.type === 'float') {
                             valExpr = inputValue;
-                        } else if (param.type === 'list' || param.type === 'ndarray') {
+                        } else                         if (param.type === 'list' || param.type === 'ndarray') {
                             valExpr = `np.array(${inputValue})`;
-                        } else if (param.type === 'str') {
-                            valExpr = `"${inputValue}"`;
+                        } else if (param.type === 'str' || param.type === 'file' || param.type === 'url') {
+                            valExpr = `"${inputValue.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
                         } else {
                             valExpr = inputValue;
                         }
@@ -2900,8 +3029,8 @@ with open('${path}', 'w', encoding='utf-8') as f:
                         valExpr = inputValue;
                     } else if (param.type === 'list' || param.type === 'ndarray') {
                         valExpr = `np.array(${inputValue})`;
-                    } else if (param.type === 'str') {
-                        valExpr = `"${inputValue}"`;
+                    } else if (param.type === 'str' || param.type === 'file' || param.type === 'url') {
+                        valExpr = `"${inputValue.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
                     } else {
                         valExpr = inputValue;
                     }

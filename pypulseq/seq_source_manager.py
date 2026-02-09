@@ -12,6 +12,7 @@ import re
 import ast
 from types import ModuleType
 from pathlib import Path
+from typing import get_origin, get_args
 
 try:
     import tomllib
@@ -328,6 +329,15 @@ class SourceManager:
                 elif d is inspect._empty:
                     val = None
                     type_name = 'None'
+                
+                # Override type for typing.Annotated[str, "file"] or Annotated[str, "url"]
+                if hasattr(p, 'annotation') and p.annotation is not inspect.Parameter.empty:
+                    ann = p.annotation
+                    origin = get_origin(ann)
+                    if origin is not None:  # Annotated has a non-None origin in 3.9+
+                        args = get_args(ann)
+                        if len(args) >= 2 and args[1] in ('file', 'url'):
+                            type_name = args[1]
                 
                 params.append({
                     'name': name,

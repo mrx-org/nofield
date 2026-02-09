@@ -32,6 +32,13 @@ sources = [
     },
     {
         'type': 'file',
+        'name': 'Built-in',
+        'path': 'built_in_seq/seq_pulseq_interpreter.py',
+        'seq_func': 'seq_pulseq_interpreter',
+        'dependencies': ['pypulseq']
+    },
+    {
+        'type': 'file',
         'name': 'MRzero',
         'path': 'https://raw.githubusercontent.com/MRsources/MRzero-Core/refs/heads/main/documentation/playground_mr0/mr0_EPI_2D_seq.ipynb',
         'seq_func': None,

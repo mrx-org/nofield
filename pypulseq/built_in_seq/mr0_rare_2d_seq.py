@@ -188,17 +188,6 @@ seq = seq_RARE_2D(
     dwell=dwell
 )
 
-# Check whether the timing of the sequence is correct
-ok, error_report = seq.check_timing()
-if ok:
-    print('Timing check passed successfully')
-else:
-    print('Timing check failed. Error listing follows:')
-    [print(e) for e in error_report]
-
-seq.plot()
-
-
 def prot_RARE_2D(
     fov=(200e-3, 200e-3, 8e-3),
     Nread=32,
