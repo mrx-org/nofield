@@ -12,6 +12,20 @@
     --error-text: #ef4444;
 }
 
+/* Scrollbars - blueish dark theme */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(59, 130, 246, 0.45) var(--bg-elevated);
+}
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-track { background: var(--bg-elevated); }
+*::-webkit-scrollbar-thumb {
+    background: rgba(59, 130, 246, 0.35);
+    border-radius: 4px;
+}
+*::-webkit-scrollbar-thumb:hover { background: rgba(59, 130, 246, 0.55); }
+*::-webkit-scrollbar-corner { background: var(--bg-elevated); }
+
 /* Shared style for sequence explorer error messages (compact, smaller font) */
 #seq-error-display,
 .seq-error-message {
@@ -392,6 +406,34 @@ body {
     outline: none;
     border-color: var(--accent);
     box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+}
+
+/* Upload button in params table - align with app button style */
+.params-upload-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(59, 130, 246, 0.4);
+    background: rgba(59, 130, 246, 0.3);
+    color: var(--text);
+    border-radius: 3px;
+    padding: 0.25rem 0.6rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    gap: 0.25rem;
+}
+
+.params-upload-btn:hover:not(:disabled) {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: white;
+}
+
+.params-upload-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
 }
 
 .btn {

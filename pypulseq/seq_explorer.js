@@ -1318,12 +1318,29 @@ json.dumps(functions)
             throw new Error(`Failed to parse ${fileName}: ${err.message}`);
         }
         const functions = JSON.parse(result);
+        // For protocol files, enrich source with base sequence (seq_func_file, seq_func) from TOML
+        // so that scanning the protocol again creates a new protocol that calls the same base (e.g. built-in)
+        let sourceToStore = source;
+        if (fileName.startsWith('user/prot/') && typeof code === 'string') {
+            const tomlMatch = code.match(/_source_config_toml = """([\s\S]*?)"""/);
+            if (tomlMatch) {
+                try {
+                    const tomlConfig = await this.parseTOMLConfig(tomlMatch[1]);
+                    const meta = tomlConfig.metadata || {};
+                    if (meta.kind === 'protocol' && (meta.seq_func_file || meta.seq_func)) {
+                        sourceToStore = { ...source, seq_func_file: meta.seq_func_file || source?.seq_func_file, seq_func: meta.seq_func || source?.seq_func };
+                    }
+                } catch (e) {
+                    // ignore TOML parse errors
+                }
+            }
+        }
         if (!this.sequences[fileName]) {
-            this.sequences[fileName] = { functions: [], source: source, code: code };
+            this.sequences[fileName] = { functions: [], source: sourceToStore, code: code };
         } else {
             this.sequences[fileName].functions = [];
             this.sequences[fileName].code = code;
-            this.sequences[fileName].source = source;
+            this.sequences[fileName].source = sourceToStore;
         }
         for (const func of functions) {
             this.sequences[fileName].functions.push({
@@ -1438,7 +1455,19 @@ json.dumps(functions)
                             const isProtocol = source?.itemKind === 'protocol' || (source?.path && source.path.startsWith('user/prot/'));
                             let displayFileName = fileName;
                             if (isProtocol) {
-                                displayFileName = source?.displayName || this.getProtocolDisplayNameFromSeqFuncFile(this.getPathForDisplayName(fileName, source)) || (source?.path || fileName).split('/').pop().replace(/\.py$/, '');
+                                displayFileName = source?.displayName || this.getProtocolDisplayNameFromSeqFuncFile(this.getPathForDisplayName(fileName, source));
+                                if (!displayFileName) {
+                                    // Fallback: handle both path-style (user/prot/file.py) and module-style (user.prot.file) keys
+                                    const pathOrModule = source?.path || fileName;
+                                    if (pathOrModule.includes('.') && !pathOrModule.includes('/') && !pathOrModule.includes('\\')) {
+                                        // Module path: strip .py then extract last segment (avoid "py" from extension)
+                                        const withoutPy = pathOrModule.replace(/\.py$/i, '');
+                                        displayFileName = withoutPy.split('.').pop();
+                                    } else {
+                                        // Path-style: extract filename
+                                        displayFileName = pathOrModule.split('/').pop().replace(/\.py$/, '');
+                                    }
+                                }
                             } else if (source?.isUserEdited && source?.displayName) {
                                 displayFileName = source.displayName;
                             } else if (fileName.startsWith('user/')) {
@@ -1451,6 +1480,12 @@ json.dumps(functions)
                                     if (lastDotBeforePy > 0) {
                                         shortFileName = shortFileName.substring(lastDotBeforePy + 1);
                                     }
+                                }
+                                // If key is a full module path (e.g. pypulseq_examples.scripts.foo), show only last segment (file:func)
+                                // Strip .py first so we don't get "py" as the segment
+                                if (shortFileName.includes('.') && !shortFileName.includes('/') && !shortFileName.includes('\\')) {
+                                    const withoutPy = shortFileName.replace(/\.py$/i, '');
+                                    shortFileName = withoutPy.split('.').pop();
                                 }
                                 displayFileName = shortFileName;
                             }
@@ -1720,9 +1755,25 @@ json.dumps(_result)
         if (pathToDisplay.endsWith('.py')) {
             pathToDisplay = pathToDisplay.slice(0, -3);
         }
+        // If full module path (e.g. pypulseq_examples.scripts.foo), show only last segment
+        if (pathToDisplay.includes('.') && !pathToDisplay.includes('/') && !pathToDisplay.includes('\\')) {
+            pathToDisplay = pathToDisplay.split('.').pop();
+        }
         const isProtocol = source?.itemKind === 'protocol' || (source?.path && source.path.startsWith('user/prot/'));
         if (isProtocol) {
-            pathToDisplay = source?.displayName || this.getProtocolDisplayNameFromSeqFuncFile(this.getPathForDisplayName(fileName, source)) || (source?.path || fileName).split('/').pop().replace(/\.py$/, '');
+            pathToDisplay = source?.displayName || this.getProtocolDisplayNameFromSeqFuncFile(this.getPathForDisplayName(fileName, source));
+            if (!pathToDisplay) {
+                // Fallback: handle both path-style (user/prot/file.py) and module-style (user.prot.file) keys
+                const pathOrModule = source?.path || fileName;
+                if (pathOrModule.includes('.') && !pathOrModule.includes('/') && !pathOrModule.includes('\\')) {
+                    // Module path: strip .py then extract last segment (avoid "py" from extension)
+                    const withoutPy = pathOrModule.replace(/\.py$/i, '');
+                    pathToDisplay = withoutPy.split('.').pop();
+                } else {
+                    // Path-style: extract filename
+                    pathToDisplay = pathOrModule.split('/').pop().replace(/\.py$/, '');
+                }
+            }
         }
         const displayName = isProtocol ? `${origin} / ${pathToDisplay}` : `${origin} / ${pathToDisplay}:${functionName}`;
         nameElement.textContent = displayName;
@@ -3070,8 +3121,15 @@ with open('${path}', 'w', encoding='utf-8') as f:
         // 2. Resolve call target (seq_func_file / seq_func = what we call; for protocols always the base)
         const { fileName, functionName: functionFromExplorer, source } = this.selectedSequence;
         const meta = this.getSequenceMetadata(fileName, source, functionFromExplorer);
-        const callTargetFile = source?.seq_func_file ?? meta.seq_func_file;
-        const callTargetFunc = source?.seq_func ?? meta.seq_func;
+        const isProtocol = source?.itemKind === 'protocol' || (source?.path && source.path.startsWith('user/prot/'));
+        // For protocols, always use the base (source.seq_func_file / source.seq_func); otherwise meta can
+        // point to the protocol itself (fullModulePath) and we'd generate invalid imports (e.g. from user.prot.1_prot_gre)
+        const callTargetFile = isProtocol
+            ? (source?.seq_func_file || meta.seq_func_file || source?.path || fileName)
+            : (meta.seq_func_file || source?.seq_func_file || source?.path || fileName);
+        const callTargetFunc = isProtocol
+            ? (source?.seq_func || meta.seq_func || functionFromExplorer || 'main')
+            : (meta.seq_func || source?.seq_func || functionFromExplorer || 'main');
         const callMeta = { seq_func_file: callTargetFile, seq_func: callTargetFunc, type: meta.type };
         const importStmt = this.buildImportStatement(callMeta);
 

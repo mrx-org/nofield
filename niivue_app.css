@@ -9,6 +9,21 @@
   --accent: #3b82f6;
 }
 
+/* Scrollbars - blueish dark theme */
+.niivue-app,
+.niivue-app * {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(59, 130, 246, 0.45) var(--bg-elevated);
+}
+.niivue-app ::-webkit-scrollbar { width: 8px; height: 8px; }
+.niivue-app ::-webkit-scrollbar-track { background: var(--bg-elevated); }
+.niivue-app ::-webkit-scrollbar-thumb {
+  background: rgba(59, 130, 246, 0.35);
+  border-radius: 4px;
+}
+.niivue-app ::-webkit-scrollbar-thumb:hover { background: rgba(59, 130, 246, 0.55); }
+.niivue-app ::-webkit-scrollbar-corner { background: var(--bg-elevated); }
+
 .niivue-app {
   height: 100%;
   margin: 0;

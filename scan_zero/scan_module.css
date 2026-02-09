@@ -1,3 +1,18 @@
+/* Scrollbars - blueish dark theme */
+.scan-module,
+.scan-module * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(59, 130, 246, 0.45) var(--bg-elevated, #0f1424);
+}
+.scan-module ::-webkit-scrollbar { width: 8px; height: 8px; }
+.scan-module ::-webkit-scrollbar-track { background: var(--bg-elevated, #0f1424); }
+.scan-module ::-webkit-scrollbar-thumb {
+    background: rgba(59, 130, 246, 0.35);
+    border-radius: 4px;
+}
+.scan-module ::-webkit-scrollbar-thumb:hover { background: rgba(59, 130, 246, 0.55); }
+.scan-module ::-webkit-scrollbar-corner { background: var(--bg-elevated, #0f1424); }
+
 .scan-module {
     display: flex;
     flex-direction: column;

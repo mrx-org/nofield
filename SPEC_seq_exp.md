@@ -120,6 +120,12 @@ Protocol files are generated with:
 - TOML header with `kind = "protocol"`, `seq_func_file` and `seq_func` set to the **call target** (the base sequence), plus dependencies.
 - An import for the base sequence and a `def prot_*(...): return seq_func(**kwargs)` that forwards parameters. No protocol file path or `prot_*` name is written into the TOML.
 
+**Automatic protocol on scan:** When the user scans, the Scan Module calls `executeFunction(silent=true, protocolName)` with the scan number as `protocolName`. The Sequence Explorer then creates a protocol snapshot with a scan-number prefix (e.g. `1_prot_gre.py`, `2_prot_gre.py`) and registers it under User Protocols. The new protocol always calls the **base sequence** (from `seq_func_file` / `seq_func`), not a previous protocol.
+
+**Protocol source enrichment:** When parsing protocol files (`user/prot/...`), the stored source is enriched with `seq_func_file` and `seq_func` from the file’s TOML. That way the base sequence is known even after reload, so re-scanning or loading the protocol later still resolves the correct call target.
+
+**Re-scanning protocols:** Re-scanning an existing protocol (e.g. `1_prot_gre`) creates a new numbered protocol (e.g. `2_prot_gre`) that calls the **same base sequence** (e.g. built-in `seq_gre`), not the previous protocol. This applies to built-in, folder, and module-derived protocols alike.
+
 ### 6. Parameter inspection and protocol arguments
 
 **Intent:** The UI builds dynamic parameter controls from the **base sequence**’s function signature. When executing or when saving a protocol, we need to turn UI values into Python argument expressions that the base sequence accepts.

@@ -75,6 +75,29 @@
     box-sizing: border-box;
 }
 
+/* === SCROLLBARS - blueish dark theme === */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(59, 130, 246, 0.45) var(--bg-elevated);
+}
+*::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+*::-webkit-scrollbar-track {
+    background: var(--bg-elevated);
+}
+*::-webkit-scrollbar-thumb {
+    background: rgba(59, 130, 246, 0.35);
+    border-radius: 4px;
+}
+*::-webkit-scrollbar-thumb:hover {
+    background: rgba(59, 130, 246, 0.55);
+}
+*::-webkit-scrollbar-corner {
+    background: var(--bg-elevated);
+}
+
 /* === SHARED COMPONENT CLASSES === */
 
 /* Volume Row (used in niivue_app.js) */
@@ -246,6 +269,34 @@
     padding: 0.1rem 0.3rem;
     border-radius: var(--radius-md);
     border: 1px solid var(--border);
+}
+
+/* Upload button in params table - match app button style */
+.params-upload-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(59, 130, 246, 0.4);
+    background: rgba(59, 130, 246, 0.3);
+    color: var(--text);
+    border-radius: var(--radius-sm);
+    padding: 0.25rem 0.6rem;
+    font-size: 0.75rem;
+    font-weight: var(--font-weight-medium);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    gap: 0.25rem;
+}
+
+.params-upload-btn:hover:not(:disabled) {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: white;
+}
+
+.params-upload-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
 }
 
 /* === UNIFIED BUTTON SYSTEM === */
