@@ -690,52 +690,14 @@ json.dumps(versions)
     }
 
     /**
-     * Get the code string for a file-based sequence (cached or fetched). Returns null for module sources.
-     * @param {string} fileName - sequence key
-     * @param {object} source - source object
-     * @returns {Promise<string|null>} code string or null for module
-     */
-    async getCodeForSequence(fileName, source) {
-        const sourceType = this.resolveSourceType(source);
-        const fileBased = ['local_file', 'built-in', 'remote_file', 'folder'];
-        if (!fileBased.includes(sourceType)) {
-            return null;
-        }
-        let code = this.sequences[fileName]?.code;
-        if (code) return code;
-        if (sourceType === 'local_file' || sourceType === 'built-in') {
-            const url = this.resolvePath(source.path) + '?t=' + Date.now();
-            const response = await fetch(url);
-            if (!response.ok) throw new Error(`Failed to fetch ${source.path}`);
-            return await response.text();
-        }
-        if (sourceType === 'remote_file') {
-            let fetchUrl = source.url || source.path || '';
-            if (fetchUrl && fetchUrl.includes('github.com') && fetchUrl.includes('/blob/')) {
-                fetchUrl = fetchUrl.replace('github.com', 'raw.githubusercontent.com').replace('/blob/', '/');
-            }
-            const response = await fetch(fetchUrl);
-            if (!response.ok) throw new Error(`Failed to fetch ${fetchUrl}`);
-            return await response.text();
-        }
-        if (sourceType === 'folder') {
-            const allFiles = Object.keys(this.sequences);
-            throw new Error(`Code not found for ${fileName}. Folder code should be cached. Available: ${allFiles.join(', ')}`);
-        }
-        return null;
-    }
-
-    /**
-     * Build the Python script string for executing a sequence (file-based or module).
-     * @param {{ sourceType: 'file_based'|'pyodide_module', code: string|null, modulePath: string, functionName: string, argsDict: object, silent: boolean, themeCode: string, plotSpeed: string, debug?: boolean }} options
+     * Build the Python script string for executing a sequence (module path only).
+     * @param {{ modulePath: string, functionName: string, argsDict: object, silent: boolean, themeCode: string, plotSpeed: string, debug?: boolean }} options
      * @returns {string} Python script
      */
     buildExecuteScript(options) {
-        const { sourceType, code, modulePath, functionName, argsDict, silent, themeCode, plotSpeed, debug = false } = options;
+        const { modulePath, functionName, argsDict, silent, themeCode, plotSpeed, debug = false } = options;
         const argsJson = JSON.stringify(argsDict);
-        const execCall = sourceType === 'file_based'
-            ? `manager.execute_function(\n        module_path=None,\n        function_name='${functionName}',\n        code=${JSON.stringify(code)},\n        args_dict=${argsJson}\n    )`
-            : `manager.execute_function(\n        module_path='${modulePath}',\n        function_name='${functionName}',\n        code=None,\n        args_dict=${argsJson}\n    )`;
+        const execCall = `manager.execute_function(\n        module_path='${modulePath}',\n        function_name='${functionName}',\n        args_dict=${argsJson}\n    )`;
         const dbgStart = debug ? 'print("PYTHON (popup): Execution starting...")\n' : '';
         const dbgResult = debug ? '\n    print(f"PYTHON (popup): Result from execute_function: {result}")' : '';
         const dbgSeq = debug ? '\nprint(f"PYTHON (popup): Found sequence object: {seq is not None}")' : '';
@@ -957,8 +919,13 @@ else:
 `);
                 const fileCode = JSON.parse(code);
                 if (fileCode) {
-                    // Use code from Python memory (path is unique key; name can be shared)
-                    await this.parseFile(source.path || source.name, fileCode, source);
+                    const path = source.path || source.name;
+                    let sourceWithModule = source;
+                    if (path && (path.startsWith('user/seq/') || path.startsWith('user/prot/'))) {
+                        const fullModulePath = path.replace(/\.py$/i, '').replace(/\//g, '.');
+                        sourceWithModule = { ...source, fullModulePath };
+                    }
+                    await this.parseFile(path, fileCode, sourceWithModule);
                     return;
                 }
             } catch (e) {
@@ -986,8 +953,13 @@ with open(os.path.join(pkg_dir, '${fileBase}'), 'w', encoding='utf-8') as f:
     f.write(${JSON.stringify(code)})
 `);
         }
-        // Use path as key so multiple files with the same source name (e.g. "Built-in") don't overwrite
-        await this.parseFile(source.path || source.name, code, source);
+        const path = source.path || source.name;
+        let sourceToPass = source;
+        if (path && (path.startsWith('built_in_seq/') || path.startsWith('user/seq/') || path.startsWith('user/prot/'))) {
+            const fullModulePath = path.replace(/\.py$/i, '').replace(/\//g, '.');
+            sourceToPass = { ...source, fullModulePath };
+        }
+        await this.parseFile(path, code, sourceToPass);
     }
     
     async loadGitHubRaw(source) {
@@ -996,10 +968,27 @@ with open(os.path.join(pkg_dir, '${fileBase}'), 'w', encoding='utf-8') as f:
         if (!response.ok) throw new Error(`Failed to fetch ${source.url}: ${response.status} ${response.statusText}`);
         const code = await response.text();
         const fileName = source.name || source.url.split('/').pop();
-        const cachedPath = `remote/${fileName}`;
-        console.log(`Caching external file ${fileName} -> ${cachedPath}, code length: ${code.length}`);
-        await this.storeUserFile(cachedPath, code);
-        await this.parseFile(cachedPath, code, { ...source, path: cachedPath });
+        console.log(`Loading external file ${fileName}, code length: ${code.length}`);
+        if (this.config.pyodide) {
+            await this.config.pyodide.runPythonAsync(`
+import os
+d = '/remote_modules'
+if not os.path.exists(d):
+    os.makedirs(d)
+init_path = os.path.join(d, '__init__.py')
+if not os.path.exists(init_path):
+    with open(init_path, 'w', encoding='utf-8') as f:
+        f.write('')
+`);
+            const vfsPath = `/remote_modules/${fileName}`;
+            await this.config.pyodide.runPythonAsync(`
+with open(${JSON.stringify(vfsPath)}, 'w', encoding='utf-8') as f:
+    f.write(${JSON.stringify(code)})
+`);
+        }
+        const moduleName = fileName.replace(/\.py$/i, '').replace(/\.ipynb$/i, '');
+        const fullModulePath = `remote_modules.${moduleName}`;
+        await this.parseFile(fullModulePath, code, { ...source, path: fullModulePath, fullModulePath });
     }
     
     async loadRemoteFile(source) {
@@ -1068,10 +1057,27 @@ python_code
             }
         }
         
-        const cachedPath = `remote/${fileName}`;
-        console.log(`Caching external file ${fileName} -> ${cachedPath}, code length: ${code.length}`);
-        await this.storeUserFile(cachedPath, code);
-        await this.parseFile(cachedPath, code, { ...source, path: cachedPath });
+        console.log(`Loading remote file ${fileName}, code length: ${code.length}`);
+        if (this.config.pyodide) {
+            await this.config.pyodide.runPythonAsync(`
+import os
+d = '/remote_modules'
+if not os.path.exists(d):
+    os.makedirs(d)
+init_path = os.path.join(d, '__init__.py')
+if not os.path.exists(init_path):
+    with open(init_path, 'w', encoding='utf-8') as f:
+        f.write('')
+`);
+            const vfsPath = `/remote_modules/${fileName}`;
+            await this.config.pyodide.runPythonAsync(`
+with open(${JSON.stringify(vfsPath)}, 'w', encoding='utf-8') as f:
+    f.write(${JSON.stringify(code)})
+`);
+        }
+        const moduleName = fileName.replace(/\.py$/i, '').replace(/\.ipynb$/i, '');
+        const fullModulePath = `remote_modules.${moduleName}`;
+        await this.parseFile(fullModulePath, code, { ...source, path: fullModulePath, fullModulePath });
     }
     
     async loadFolder(source) {
@@ -1117,7 +1123,22 @@ python_code
         }
         const files = await response.json();
         
-        // Filter for Python files if specified
+        const folderKey = (source.name || source.path || 'folder').replace(/[^a-zA-Z0-9_.-]/g, '_').replace(/^_+|_+$/g, '') || 'folder';
+        const modulePackageName = folderKey + '_examples';
+        const moduleScriptsDir = `/${modulePackageName}/scripts`;
+        if (this.config.pyodide) {
+            await this.config.pyodide.runPythonAsync(`
+import os
+for d in ('/${modulePackageName}', '${moduleScriptsDir}'):
+    if not os.path.exists(d):
+        os.makedirs(d)
+    init_path = os.path.join(d, '__init__.py')
+    if not os.path.exists(init_path):
+        with open(init_path, 'w', encoding='utf-8') as f:
+            f.write('')
+`);
+        }
+        
         const fileFilter = source.fileFilter || (file => file.name.endsWith('.py'));
         
         let loadedCount = 0;
@@ -1127,10 +1148,15 @@ python_code
                     const fileResponse = await fetch(file.download_url);
                     if (fileResponse.ok) {
                         const code = await fileResponse.text();
-                        const folderKey = (source.name || source.path || 'folder').replace(/[^a-zA-Z0-9_.-]/g, '_');
-                        const cachedPath = `folder/${folderKey}/${file.name}`;
-                        await this.storeUserFile(cachedPath, code);
-                        await this.parseFile(cachedPath, code, { ...source, path: cachedPath, filePath: file.path });
+                        if (this.config.pyodide) {
+                            const vfsPath = `${moduleScriptsDir}/${file.name}`;
+                            await this.config.pyodide.runPythonAsync(`
+with open(${JSON.stringify(vfsPath)}, 'w', encoding='utf-8') as f:
+    f.write(${JSON.stringify(code)})
+`);
+                        }
+                        const fullModulePath = `${modulePackageName}.scripts.${file.name.replace(/\.py$/i, '')}`;
+                        await this.parseFile(fullModulePath, code, { ...source, path: fullModulePath, filePath: file.path, fullModulePath });
                         loadedCount++;
                     } else {
                         console.warn(`Failed to fetch ${file.name}: ${fileResponse.status} ${fileResponse.statusText}`);
@@ -1559,50 +1585,31 @@ json.dumps(functions)
                 await this.installDependencies(source.dependencies);
             }
             
-            let paramsJson;
             const sourceType = this.resolveSourceType(source);
-            const code = await this.getCodeForSequence(fileName, source);
-            if (code !== null) {
-                // File-based: extract parameters from code
-                await this.ensureSourceManager();
-                paramsJson = await pyodide.runPythonAsync(`
-import json
-from seq_source_manager import SourceManager
-
-manager = SourceManager()
-params = manager.extract_function_parameters(
-    module_path=None,
-    function_name='${functionName}',
-    code=${JSON.stringify(code)}
-)
-json.dumps(params)
-`);
-            } else if (sourceType === 'pyodide_module') {
-                // For module-based sources
-                const modulePath = source.fullModulePath || source.module || source.path;
-                await this.ensureSourceManager();
-                paramsJson = await pyodide.runPythonAsync(`
+            const useModulePath = source.fullModulePath || (sourceType === 'pyodide_module' ? (source.module || source.path) : null);
+            if (!useModulePath) {
+                throw new Error('Sequence has no module path; cannot load parameters.');
+            }
+            const modulePath = source.fullModulePath || source.module || source.path;
+            await this.ensureSourceManager();
+            const paramsJson = await pyodide.runPythonAsync(`
 import json
 from seq_source_manager import SourceManager
 
 manager = SourceManager()
 params = manager.extract_function_parameters(
     module_path='${modulePath}',
-    function_name='${functionName}',
-    code=None
+    function_name='${functionName}'
 )
 json.dumps(params)
 `);
-            } else {
-                throw new Error(`Cannot extract parameters for source type: ${sourceType}`);
-            }
 
             const params = JSON.parse(paramsJson);
             this.functionParams = params;
             
             // Always fetch docstring BEFORE rendering controls, so tooltips can use it
-            // For file sources, docstring should already be in the code/selectedSequence
-            if (sourceType === 'pyodide_module') {
+            // When we used module for params (fullModulePath or pyodide_module), fetch docstring via module
+            if (useModulePath) {
                 try {
                     const modulePath = source.fullModulePath || source.module || source.path;
                     console.log('Fetching docstring for module function:', { modulePath, functionName, source });
@@ -2162,18 +2169,13 @@ json.dumps(_result)
             await this.ensureSourceManager();
 
             const sourceType = this.resolveSourceType(source);
-            const code = await this.getCodeForSequence(fileName, source);
-            let result;
-            if (code !== null) {
-                const script = this.buildExecuteScript({ sourceType: 'file_based', code, modulePath: '', functionName, argsDict, silent, themeCode, plotSpeed, debug: false });
-                result = await pyodide.runPythonAsync(script);
-            } else if (sourceType === 'pyodide_module') {
-                const modulePath = source.fullModulePath || source.module || source.path;
-                const script = this.buildExecuteScript({ sourceType: 'pyodide_module', code: null, modulePath, functionName, argsDict, silent, themeCode, plotSpeed, debug: false });
-                result = await pyodide.runPythonAsync(script);
-            } else {
-                throw new Error(`Cannot execute function for source type: ${sourceType}`);
+            const useModulePath = source.fullModulePath || (sourceType === 'pyodide_module' ? (source.module || source.path) : null);
+            if (!useModulePath) {
+                throw new Error('Sequence has no module path; cannot execute.');
             }
+            const modulePath = source.fullModulePath || source.module || source.path;
+            const script = this.buildExecuteScript({ modulePath, functionName, argsDict, silent, themeCode, plotSpeed, debug: false });
+            const result = await pyodide.runPythonAsync(script);
 
             // Parse result (SourceManager returns JSON string)
             const resultObj = JSON.parse(result);
@@ -2396,18 +2398,13 @@ plt.rcParams['font.size'] = 8`;
             }
             
             const sourceType = this.resolveSourceType(source);
-            const code = await this.getCodeForSequence(fileName, source);
-            let result;
-            if (code !== null) {
-                const script = this.buildExecuteScript({ sourceType: 'file_based', code, modulePath: '', functionName, argsDict, silent, themeCode, plotSpeed, debug: true });
-                result = await pyodide.runPythonAsync(script);
-            } else if (sourceType === 'pyodide_module') {
-                const modulePath = source.fullModulePath || source.module || source.path;
-                const script = this.buildExecuteScript({ sourceType: 'pyodide_module', code: null, modulePath, functionName, argsDict, silent, themeCode, plotSpeed, debug: true });
-                result = await pyodide.runPythonAsync(script);
-            } else {
-                throw new Error(`Cannot execute function for source type: ${sourceType}`);
+            const useModulePath = source.fullModulePath || (sourceType === 'pyodide_module' ? (source.module || source.path) : null);
+            if (!useModulePath) {
+                throw new Error('Sequence has no module path; cannot execute.');
             }
+            const modulePath = source.fullModulePath || source.module || source.path;
+            const script = this.buildExecuteScript({ modulePath, functionName, argsDict, silent, themeCode, plotSpeed, debug: true });
+            const result = await pyodide.runPythonAsync(script);
 
             // Final sweep for any matplotlib figures
             setTimeout(() => {
@@ -2808,6 +2805,25 @@ sources = [
     }
     
     /**
+     * Resolve seq_func_file (module path or file path) to the key used in this.sequences.
+     * Protocols may store module path (e.g. built_in_seq.gre_seq); keys are often file paths (e.g. built_in_seq/gre_seq.py).
+     * @param {string} seqFuncFile - seq_func_file from TOML (module path or file path)
+     * @returns {string|null} key in this.sequences, or null if not found
+     */
+    resolveSequenceKey(seqFuncFile) {
+        if (!seqFuncFile) return null;
+        if (this.sequences[seqFuncFile]) return seqFuncFile;
+        if (seqFuncFile.includes('.') && !seqFuncFile.endsWith('.py')) {
+            const pathForm = seqFuncFile.replace(/\./g, '/') + '.py';
+            if (this.sequences[pathForm]) return pathForm;
+        }
+        const found = Object.entries(this.sequences).find(([, fileData]) =>
+            fileData?.source?.fullModulePath === seqFuncFile
+        );
+        return found ? found[0] : null;
+    }
+
+    /**
      * Get canonical sequence metadata: seq_func_file, seq_func (call target), type.
      * For protocols, source.seq_func_file / source.seq_func are the base we call.
      */
@@ -2988,6 +3004,18 @@ parse_toml_config(_toml_payload)
         if (!this.config.pyodide) {
             throw new Error('Pyodide not available');
         }
+        if (path.startsWith('user/seq/') || path.startsWith('user/prot/')) {
+            await this.config.pyodide.runPythonAsync(`
+import os
+for d in ('user', 'user/seq', 'user/prot'):
+    if not os.path.exists(d):
+        os.makedirs(d)
+    init_path = os.path.join(d, '__init__.py')
+    if not os.path.exists(init_path):
+        with open(init_path, 'w', encoding='utf-8') as f:
+            f.write('')
+`);
+        }
         await this.config.pyodide.runPythonAsync(`
 import sys
 import os
@@ -3082,6 +3110,7 @@ def ${safeFunctionName}(
             await this.storeUserFile(finalFileName, code);
 
             const protocolLabel = this.getProtocolDisplayNameFromSeqFuncFile(callTargetFile) || finalFileName.split('/').pop().replace(/\.py$/, '');
+            const fullModulePath = finalFileName.replace(/\.py$/i, '').replace(/\//g, '.');
             const newSource = {
                 name: 'User Protocols',
                 itemKind: 'protocol',
@@ -3089,6 +3118,7 @@ def ${safeFunctionName}(
                 seq_func: callTargetFunc,
                 type: 'file',
                 path: finalFileName,
+                fullModulePath: fullModulePath,
                 description: 'Protocol Snapshot',
                 isUserEdited: true,
                 displayName: filePrefix ? filePrefix + protocolLabel : protocolLabel
@@ -3160,16 +3190,17 @@ def ${safeFunctionName}(
             editUnderlyingBtn.className = 'btn btn-secondary btn-md';
             editUnderlyingBtn.textContent = 'Edit underlying sequence';
             editUnderlyingBtn.onclick = async () => {
-                const underlyingSource = this.sequences[seqFuncFile]?.source ?? this.config.sources.find(s => this.getSourcePath(s) === seqFuncFile);
+                const key = this.resolveSequenceKey(seqFuncFile);
+                const underlyingSource = (key && this.sequences[key]?.source) ?? this.config.sources.find(s => this.getSourcePath(s) === seqFuncFile);
                 if (!underlyingSource) {
                     this.showStatus(`Could not resolve source for ${seqFuncFile}`, 'error');
                     return;
                 }
                 const funcName = (underlyingSource?.seq_func ?? this.getSourceBaseSequence(underlyingSource)) || 'main';
-                const fileData = this.sequences[seqFuncFile];
+                const fileData = key ? this.sequences[key] : null;
                 const func = fileData?.functions?.find(f => f.name === funcName) || fileData?.functions?.[0] || {};
-                const displayName = this.getProtocolDisplayNameFromSeqFuncFile(this.getPathForDisplayName(seqFuncFile, underlyingSource)) || (underlyingSource?.path || seqFuncFile).split('/').pop().replace(/\.py$/, '');
-                this.selectedSequence = { fileName: seqFuncFile, functionName: func.name || funcName, displayName, ...func, source: underlyingSource };
+                const displayName = this.getProtocolDisplayNameFromSeqFuncFile(this.getPathForDisplayName(key || seqFuncFile, underlyingSource)) || (underlyingSource?.path || seqFuncFile).split('/').pop().replace(/\.py$/, '');
+                this.selectedSequence = { fileName: key || seqFuncFile, functionName: func.name || funcName, displayName, ...func, source: underlyingSource };
                 modal.remove();
                 await this.showCodeEditor();
             };
@@ -3297,6 +3328,7 @@ def ${safeFunctionName}(
 
             const callTargetFile = savingProtocol ? (seqFuncFileFromMeta || source?.seq_func_file) : finalFileName;
             const callTargetFunc = savingProtocol ? (metadata.seq_func ?? source?.seq_func ?? seqFunc) : seqFunc;
+            const fullModulePath = finalFileName.replace(/\.py$/i, '').replace(/\//g, '.');
             const newSource = {
                 name: savingProtocol ? 'User Protocols' : 'User Refined Sequences',
                 itemKind: savingProtocol ? 'protocol' : 'sequence',
@@ -3304,6 +3336,7 @@ def ${safeFunctionName}(
                 seq_func_file: callTargetFile,
                 seq_func: callTargetFunc,
                 type: 'file',
+                fullModulePath,
                 description: metadata.description || (savingProtocol ? 'User edited protocol' : 'User edited sequence'),
                 dependencies: deps,
                 isUserEdited: true,

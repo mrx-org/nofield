@@ -88,14 +88,31 @@ Protocols always call the base sequence (`seq_*` or `main`). Saving a protocol f
 
 ### 4. Virtual filesystem layout (Pyodide)
 
-All in-memory paths used for loading and saving:
+All in-memory paths used for loading and saving. **Every loaded sequence is stored under a package layout** so it can be imported as a module (see §4a).
 
-- **`user/seq/`** — User-edited sequences only. Save As (from the editor) shows and overwrites only files here.
-- **`user/prot/`** — User-saved protocols only.
-- **`remote/`** — Single files fetched from a URL (GitHub raw, MRzero notebook, etc.). One file per URL; not mixed with user content.
-- **`folder/<sourceKey>/`** — Files from a folder source (e.g. pypulseq examples, MRzero playground). `<sourceKey>` is derived from the source name so different folders don’t collide.
+- **`user/seq/`** — User-edited sequences only. Save As (from the editor) shows and overwrites only files here. Treated as package `user.seq` for imports; each sequence has **`fullModulePath`** (e.g. `user.seq.foo`).
+- **`user/prot/`** — User-saved protocols only. Treated as package `user.prot` for imports; each protocol has **`fullModulePath`** (e.g. `user.prot.prot_gre`). Set when saving a protocol snapshot and when loading from `user/prot/`.
+- **`/remote_modules/`** — Single files fetched from a URL (GitHub raw, remote file, MRzero notebook, etc.) are written only here (no separate `remote/` cache). Sequence key is **`fullModulePath`** (e.g. `remote_modules.foo`).
+- **`/<package>_examples/scripts/`** — Files from a folder source (e.g. pypulseq examples, MRzero playground) are written only under this package path (no separate `folder/<sourceKey>/` cache). Sequence key is **`fullModulePath`** (e.g. `pypulseq_examples.scripts.gre`).
 
-Built-in sequences are mirrored under **`/built_in_seq/`** (filesystem root) for imports. The Save As dialog lists only `user/seq/` so loaded pypulseq/MRzero files do not appear there.
+Built-in sequences are mirrored under **`/built_in_seq/`** (filesystem root) for imports (`built_in_seq.gre_seq`, etc.). The Save As dialog lists only `user/seq/` or `user/prot/` so loaded pypulseq/MRzero files do not appear there.
+
+#### 4a. Unified module model (all seq funcs as modules)
+
+**Intent:** Config (JSON / sources_config) only describes *where* to get code (`type`, `path`/`url`). At runtime, **every loaded sequence function is always used as a module** — i.e. we always call with `module_path` and `function_name`, never with raw `code`.
+
+**Benefits:**
+- **Single code path** for parameter extraction and execution: no branching on “file vs module”.
+- **Faster inspect:** `importlib.import_module(module_path)` then `inspect.signature(getattr(module, function_name))`. No `exec(code)` of the full file; `if __name__ == '__main__':` blocks do not run on import.
+- **Predictable behavior:** No accidental execution of script blocks; same semantics for built-ins, folder, remote, and user files.
+
+**Implementation outline:**
+- Each **loader** (built-in file, folder, remote file, local/user file) must:
+  1. Fetch or read the code from the configured path/url (unchanged).
+  2. Write files into a VFS directory that is a valid Python package (with `__init__.py` where needed), e.g. `/built_in_seq/`, `/pypulseq_examples/scripts/`, `/remote_modules/`, `/user/seq/`, `/user/prot/`.
+  3. Set **`fullModulePath`** (e.g. `built_in_seq.gre_seq`, `pypulseq_examples.scripts.gre`, `user.seq.foo`, `user.prot.prot_gre`) for each discovered sequence/protocol and attach it to the source/sequence metadata. The sequence key in the explorer is `fullModulePath` for folder and remote; for built-in and user it is path or `fullModulePath` as set by the loader.
+- **Parameter loading** and **execution** use only the module path: `extract_function_parameters(module_path, function_name)` and `execute_function(module_path, function_name, args_dict)`. There is no `code` argument or fallback; if `fullModulePath` is missing, the UI throws a clear error (e.g. "Sequence has no module path; cannot load parameters."). All loaders must provide `fullModulePath`.
+- Protocol generation and import statements use the same module path (e.g. `from built_in_seq.gre_seq import seq_gre`).
 
 ### 5. Protocol generation
 
@@ -108,8 +125,8 @@ Protocol files are generated with:
 **Intent:** The UI builds dynamic parameter controls from the **base sequence**’s function signature. When executing or when saving a protocol, we need to turn UI values into Python argument expressions that the base sequence accepts.
 
 **Inspection (Python, `seq_source_manager.py`) — inspect only:**
-- Parameters are extracted via **inspect only**: get the function (by importing the module or executing the code), then `inspect.signature(func)` and each parameter's default. No AST path; one code path, real runtime types and defaults.
-- **Resolving the function:** For module sources, `importlib.import_module(module_path)` then `getattr(module, function_name)`. For file-based sources, `exec(code, exec_globals)` then get the function from the namespace (or `__main__`).
+- Parameters are extracted via **inspect only**: get the function (by importing the module), then `inspect.signature(func)` and each parameter's default. No AST path; one code path, real runtime types and defaults.
+- **Resolving the function (unified module model, §4a):** All loaded sequences and protocols have a `fullModulePath`. We always use **`importlib.import_module(module_path)`** then **`getattr(module, function_name)`**. No `exec(code)`; if `module_path` is missing, Python raises `ValueError("module_path must be provided")`. The JS throws a user-facing error when `fullModulePath` is absent (e.g. for protocols, ensure it is set when saving and when loading from `user/prot/` or `user/seq/`).
 - **Type normalization:** All extracted types are normalized before sending to the frontend:
   - `tuple` and `list` → stored as **type `'list'`**, value converted to a list (so the sequence’s `fov: tuple = (256e-3, 256e-3, 3e-3)` becomes type `'list'` and default `[0.256, 0.256, 0.003]`).
   - `np.ndarray` → **type `'ndarray'`**, value as list (`.tolist()`).

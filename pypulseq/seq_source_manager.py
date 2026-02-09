@@ -239,73 +239,34 @@ class SourceManager:
         
         return functions
     
-    def extract_function_parameters(self, module_path=None, function_name=None, code=None):
+    def extract_function_parameters(self, module_path, function_name):
         """
-        Extract parameters from a function using inspect (requires execution or import).
+        Extract parameters from a function using inspect (requires import).
         
         Args:
             module_path: Full module path (e.g., 'mrseq.scripts.t1_inv_rec_gre_single_line')
             function_name: Name of the function
-            code: Optional source code (for file-based sources)
             
         Returns:
             List of parameter dictionaries with 'name', 'default', 'type'
         """
         import numpy as np
-        import __main__
+        import os
+        import sys
         
         params = []
         try:
             func = None
             
             if module_path:
+                # Ensure filesystem root is on path so /built_in_seq, /pypulseq_examples, etc. can be imported
+                _root = os.path.abspath(os.path.sep)
+                if _root not in sys.path:
+                    sys.path.insert(0, _root)
                 module = importlib.import_module(module_path)
                 func = getattr(module, function_name, None)
-            elif code:
-                # Create a clean namespace for execution
-                exec_globals = {'__name__': '__main__', '__builtins__': __builtins__}
-                exec_globals.update(__main__.__dict__)
-                exec_err = None
-                # Execute the code
-                try:
-                    exec(code, exec_globals)
-                except Exception as err:
-                    exec_err = err
-                    # If execution fails, try to continue - function might still be defined
-                    pass
-                
-                # Get the function from the execution namespace
-                func = exec_globals.get(function_name, None)
-                
-                # Also check __main__ in case it was set there
-                if func is None:
-                    func = getattr(__main__, function_name, None)
-                
-                # If still not found, try executing in __main__ directly
-                if func is None:
-                    try:
-                        __main__.__name__ = '__main__'
-                        exec(code, __main__.__dict__)
-                        func = getattr(__main__, function_name, None)
-                    except Exception:
-                        pass
-                
-                if func is None:
-                    # Last resort: search all defined functions
-                    all_funcs = {k: v for k, v in exec_globals.items() if inspect.isfunction(v)}
-                    if function_name in all_funcs:
-                        func = all_funcs[function_name]
-                    else:
-                        msg = (
-                            f"Function '{function_name}' was not defined when the sequence code was run. "
-                            "This often happens when the sequence depends on packages not available in this lean browser environment "
-                            "(e.g. torch, MRzeroCore). Parameter controls cannot be loaded; you can still try to run the sequence."
-                        )
-                        if exec_err is not None:
-                            msg += f" Execution failed with: {exec_err!r}"
-                        raise AttributeError(msg)
             else:
-                raise ValueError("Either module_path or code must be provided")
+                raise ValueError("module_path must be provided")
             
             if func is None:
                 raise AttributeError(f"Function '{function_name}' not found")
@@ -393,14 +354,13 @@ class SourceManager:
         
         return '\n\n'.join(code_cells)
     
-    def execute_function(self, module_path=None, function_name=None, code=None, args_dict=None):
+    def execute_function(self, module_path, function_name, args_dict=None):
         """
         Execute a function with given arguments.
         
         Args:
             module_path: Full module path (for module-based sources)
             function_name: Name of the function to execute
-            code: Python code string (for file-based sources)
             args_dict: Dictionary of argument name -> Python expression string (will be evaluated)
             
         Returns:
@@ -465,86 +425,8 @@ class SourceManager:
             func = getattr(module, function_name, None)
             if func is None:
                 raise AttributeError(f"Function '{function_name}' not found in module '{module_path}'")
-        elif code:
-            # Execute the code to make the function available
-            # First, check if code has necessary imports and add them if missing
-            # This is especially important for user-edited code that may be missing imports
-            code_lines = code.split('\n')
-            # Find where actual Python code starts (after TOML preamble)
-            code_start_idx = 0
-            for i, line in enumerate(code_lines):
-                stripped = line.strip()
-                # Skip TOML preamble (lines with #, """, or empty)
-                if stripped and not stripped.startswith('#') and not stripped.startswith('"""') and stripped != '"""':
-                    code_start_idx = i
-                    break
-            
-            # Check for imports in the actual code (not in TOML preamble)
-            has_imports = any(line.strip().startswith(('import ', 'from ')) for line in code_lines[code_start_idx:code_start_idx+50])
-            
-            # If no imports found, try to add common ones based on what's used in the code
-            if not has_imports:
-                # Check what's used in the code (more comprehensive detection)
-                needs_pypulseq = any(keyword in code for keyword in ['pp.', 'pp.Opts', 'pp.Sequence', 'pypulseq', 'Sequence(', 'Opts('])
-                needs_numpy = any(keyword in code for keyword in ['np.', 'np.ndarray', 'np.array', 'numpy', 'ndarray', 'array('])
-                needs_mrseq = any(keyword in code for keyword in ['mrseq.', 'sys_defaults', 't1_inv_rec', 'add_t1_inv'])
-                needs_path = 'Path(' in code or 'Path.' in code or 'from pathlib' in code.lower()
-                needs_sys = 'sys.' in code or '__file__' in code
-                
-                # Build import block
-                import_block = []
-                if needs_pypulseq:
-                    import_block.append('import pypulseq as pp')
-                if needs_numpy:
-                    import_block.append('import numpy as np')
-                if needs_mrseq:
-                    import_block.append('from mrseq.utils.system_defaults import sys_defaults')
-                    # Try to import common mrseq functions
-                    if 't1_inv_rec_gre_single_line_kernel' in code:
-                        import_block.append('from mrseq.scripts.t1_inv_rec_gre_single_line import t1_inv_rec_gre_single_line_kernel')
-                if needs_path:
-                    import_block.append('from pathlib import Path')
-                if needs_sys:
-                    import_block.append('import sys')
-                
-                if import_block:
-                    # Insert imports after TOML preamble but before function definition
-                    if code_start_idx > 0:
-                        # Split code into preamble and actual code
-                        preamble = '\n'.join(code_lines[:code_start_idx])
-                        actual_code = '\n'.join(code_lines[code_start_idx:])
-                        code = preamble + '\n\n' + '\n'.join(import_block) + '\n\n' + actual_code
-                    else:
-                        code = '\n'.join(import_block) + '\n\n' + code
-            
-            try:
-                __main__.__name__ = '__main__'
-                # Set __file__ for code execution (needed for Path(__file__) and similar)
-                # Create execution globals with __file__ set
-                exec_globals = dict(__main__.__dict__)
-                # Set __file__ to a meaningful filename
-                # Try to extract filename from TOML metadata if available
-                filename = f'user_edited_{function_name}.py'
-                if '_source_config_toml' in code:
-                    try:
-                        import re
-                        toml_match = re.search(r'name = "([^"]+)"', code)
-                        if toml_match:
-                            filename = toml_match.group(1)
-                    except:
-                        pass
-                exec_globals['__file__'] = filename
-                exec(code, exec_globals)
-                # Update __main__ with any new definitions
-                __main__.__dict__.update(exec_globals)
-            except Exception as e:
-                raise RuntimeError(f"Failed to execute code: {e}")
-            
-            func = getattr(__main__, function_name, None)
-            if func is None:
-                raise AttributeError(f"Function '{function_name}' not found in code")
         else:
-            raise ValueError("Either module_path or code must be provided")
+            raise ValueError("module_path must be provided")
         
         # Build arguments from args_dict
         # args_dict contains Python expression strings that need to be evaluated

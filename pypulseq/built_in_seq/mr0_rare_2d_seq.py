@@ -150,43 +150,44 @@ def seq_RARE_2D(
 
 #@title RARE
 
-# Define parameters as plain variables
-experiment_id = 'RARE_2D'
-fov = (200e-3, 200e-3, 8e-3)
-base_resolution = 42  # @param {type: "slider", min: 2, max: 112, step: 2}
-Nread = base_resolution  # frequency encoding steps/samples
-Nphase = base_resolution  # phase encoding steps/samples
-Npart = 1
-FA = 90  # @param {type: "slider", min: 10, max: 270}
-FA_ref = 180 # @param {type: "slider", min: 10, max: 270}
-TE_ms = 5  # @param {type: "slider", min: 0.0, max: 200.0}
-TE = TE_ms * 1e-3
-slice_thickness = 8e-3
+if __name__ == '__main__':
+    # Define parameters as plain variables
+    experiment_id = 'RARE_2D'
+    fov = (200e-3, 200e-3, 8e-3)
+    base_resolution = 42  # @param {type: "slider", min: 2, max: 112, step: 2}
+    Nread = base_resolution  # frequency encoding steps/samples
+    Nphase = base_resolution  # phase encoding steps/samples
+    Npart = 1
+    FA = 90  # @param {type: "slider", min: 10, max: 270}
+    FA_ref = 180 # @param {type: "slider", min: 10, max: 270}
+    TE_ms = 5  # @param {type: "slider", min: 0.0, max: 200.0}
+    TE = TE_ms * 1e-3
+    slice_thickness = 8e-3
 
-# RARE-specific parameters
-TI_s = 0  # @param {type: "slider", min: 0.0, max: 10.0, step: 0.1}
-r_spoil = 2  # @param {type: "slider", min: 0, max: 3}
-PE_grad_on = True  # @param {type: "boolean"}
-RO_grad_on = True  # @param {type: "boolean"}
-dwell = 50e-6 * 2
+    # RARE-specific parameters
+    TI_s = 0  # @param {type: "slider", min: 0.0, max: 10.0, step: 0.1}
+    r_spoil = 2  # @param {type: "slider", min: 0, max: 3}
+    PE_grad_on = True  # @param {type: "boolean"}
+    RO_grad_on = True  # @param {type: "boolean"}
+    dwell = 50e-6 * 2
 
-# Generate sequence using standard parameters
-seq = seq_RARE_2D(
-    fov=fov,
-    Nread=Nread,
-    Nphase=Nphase,
-    Npart=Npart,
-    FA=FA * np.pi / 180,
-    FA_ref=FA_ref * np.pi / 180,
-    TE=TE,
-    slice_thickness=slice_thickness,
-    experiment_id=experiment_id,
-    TI_s=TI_s,
-    r_spoil=r_spoil,
-    PE_grad_on=PE_grad_on,
-    RO_grad_on=RO_grad_on,
-    dwell=dwell
-)
+    # Generate sequence using standard parameters
+    seq = seq_RARE_2D(
+        fov=fov,
+        Nread=Nread,
+        Nphase=Nphase,
+        Npart=Npart,
+        FA=FA * np.pi / 180,
+        FA_ref=FA_ref * np.pi / 180,
+        TE=TE,
+        slice_thickness=slice_thickness,
+        experiment_id=experiment_id,
+        TI_s=TI_s,
+        r_spoil=r_spoil,
+        PE_grad_on=PE_grad_on,
+        RO_grad_on=RO_grad_on,
+        dwell=dwell
+    )
 
 def prot_RARE_2D(
     fov=(200e-3, 200e-3, 8e-3),
