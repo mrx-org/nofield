@@ -114,13 +114,13 @@ Built-in sequences are mirrored under **`/built_in_seq/`** (filesystem root) for
 - **Parameter loading** and **execution** use only the module path: `extract_function_parameters(module_path, function_name)` and `execute_function(module_path, function_name, args_dict)`. There is no `code` argument or fallback; if `fullModulePath` is missing, the UI throws a clear error (e.g. "Sequence has no module path; cannot load parameters."). All loaders must provide `fullModulePath`.
 - Protocol generation and import statements use the same module path (e.g. `from built_in_seq.gre_seq import seq_gre`).
 
-### 5. Protocol generation
+### 5. Protocol generation and FOV sync
 
 Protocol files are generated with:
 - TOML header with `kind = "protocol"`, `seq_func_file` and `seq_func` set to the **call target** (the base sequence), plus dependencies.
 - An import for the base sequence and a `def prot_*(...): return seq_func(**kwargs)` that forwards parameters. No protocol file path or `prot_*` name is written into the TOML.
 
-**Automatic protocol on scan:** When the user scans, the Scan Module calls `executeFunction(silent=true, protocolName)` with the scan number as `protocolName`. The Sequence Explorer then creates a protocol snapshot with a scan-number prefix (e.g. `1_prot_gre.py`, `2_prot_gre.py`) and registers it under User Protocols. The new protocol always calls the **base sequence** (from `seq_func_file` / `seq_func`), not a previous protocol.
+**Automatic protocol on scan:** When the user scans, the Scan Module calls `executeFunction(silent=true, protocolName)` with the scan number as `protocolName`. The Sequence Explorer then creates a protocol snapshot with a scan-number prefix (e.g. `1_prot_gre.py`, `2_prot_gre.py`) and registers it under User Protocols. The new protocol always calls the **base sequence** (from `seq_func_file` / `seq_func`), not a previous protocol. As part of this scan-triggered silent execution, the explorer also inspects `SourceManager._last_sequence.definitions` and, if a `FOV`/`fov` definition is present, emits `sequence_fov_dims` so Niivue’s FOV dimension sliders (X/Y/Z in mm) are kept in sync with the currently executed sequence.
 
 **Protocol source enrichment:** When parsing protocol files (`user/prot/...`), the stored source is enriched with `seq_func_file` and `seq_func` from the file’s TOML. That way the base sequence is known even after reload, so re-scanning or loading the protocol later still resolves the correct call target.
 

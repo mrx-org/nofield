@@ -24,14 +24,14 @@ import matplotlib.pyplot as plt
 
 
 def seq_RARE_2D(
-    fov=(200e-3, 200e-3, 8e-3),
+    fov_xy=(200e-3, 200e-3),
+    slice_thickness=8e-3,
     Nread=32,
     Nphase=32,
     Npart=1,
     FA=90 * np.pi / 180,  # Can be float or array
     FA_ref=180 * np.pi / 180,  # Can be float or array
     TE=5e-3,  # Can be float or array
-    slice_thickness=8e-3,
     experiment_id='RARE_2D',
     system=None,
     # RARE-specific parameters
@@ -45,7 +45,7 @@ def seq_RARE_2D(
     2D RARE sequence function following MRzero standard.
 
     Args:
-        fov: tuple of floats (x, y, z) in meters
+        fov_xy: tuple of floats (x, y) in meters
         Nread: int - frequency encoding steps
         Nphase: int - phase encoding steps
         Npart: int - number of partitions
@@ -93,7 +93,7 @@ def seq_RARE_2D(
         system=system, return_gz=True)
 
     # Define other gradients and ADC events
-    gx = pp.make_trapezoid(channel='x', rise_time=0.5*dwell, flat_area=Nread / fov[0]*G_flag[0],
+    gx = pp.make_trapezoid(channel='x', rise_time=0.5*dwell, flat_area=Nread / fov_xy[0]*G_flag[0],
                           flat_time=Nread*dwell, system=system)
     adc = pp.make_adc(num_samples=Nread, duration=Nread*dwell, phase_offset=90 * np.pi / 180,
                      delay=0*gx.rise_time, system=system)
@@ -101,7 +101,7 @@ def seq_RARE_2D(
                                duration=1.5e-3, system=system)
     gx_prewinder = pp.make_trapezoid(channel='x', area=+(r_spoil * gx.area / 2),
                                     duration=1e-3, system=system)
-    gp = pp.make_trapezoid(channel='y', area=0 / fov[1], duration=1e-3, system=system)
+    gp = pp.make_trapezoid(channel='y', area=0 / fov_xy[1], duration=1e-3, system=system)
     rf_prep = pp.make_block_pulse(flip_angle=180 * np.pi / 180, duration=1e-3, system=system)
 
     # FLAIR preparation
@@ -131,8 +131,8 @@ def seq_RARE_2D(
 
     # RARE echo train
     for ii in range(-Nphase // 2, Nphase // 2):  # e.g. -64:63
-        gp = pp.make_trapezoid(channel='y', area=+ii / fov[1]*G_flag[1], duration=1e-3, system=system)
-        gp_ = pp.make_trapezoid(channel='y', area=-ii / fov[1]*G_flag[1], duration=1e-3, system=system)
+        gp = pp.make_trapezoid(channel='y', area=+ii / fov_xy[1]*G_flag[1], duration=1e-3, system=system)
+        gp_ = pp.make_trapezoid(channel='y', area=-ii / fov_xy[1]*G_flag[1], duration=1e-3, system=system)
 
         seq.add_block(rf2, gz2)
         seq.add_block(pp.make_delay(TEd))  # TE delay
@@ -143,7 +143,7 @@ def seq_RARE_2D(
 
     # Required sequence definitions
     seq.set_definition('name', experiment_id)
-    seq.set_definition('fov', [fov[0], fov[1], fov[2]])
+    seq.set_definition('fov', [fov_xy[0], fov_xy[1], slice_thickness])
     seq.set_definition('matrix', [Nread, Nphase, Npart])
 
     return seq
@@ -153,7 +153,7 @@ def seq_RARE_2D(
 if __name__ == '__main__':
     # Define parameters as plain variables
     experiment_id = 'RARE_2D'
-    fov = (200e-3, 200e-3, 8e-3)
+    fov_xy = (200e-3, 200e-3)
     base_resolution = 42  # @param {type: "slider", min: 2, max: 112, step: 2}
     Nread = base_resolution  # frequency encoding steps/samples
     Nphase = base_resolution  # phase encoding steps/samples
@@ -173,7 +173,7 @@ if __name__ == '__main__':
 
     # Generate sequence using standard parameters
     seq = seq_RARE_2D(
-        fov=fov,
+        fov_xy=fov_xy,
         Nread=Nread,
         Nphase=Nphase,
         Npart=Npart,
@@ -190,7 +190,7 @@ if __name__ == '__main__':
     )
 
 def prot_RARE_2D(
-    fov=(200e-3, 200e-3, 8e-3),
+    fov_xy=(200e-3, 200e-3),
     Nread=32,
     Nphase=32,
     Npart=1,

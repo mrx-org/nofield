@@ -23,7 +23,7 @@ The module bridges the gap between **Planning** (Sequence Explorer/Niivue) and *
 ## The "Fake Scan" Engine
 Since a real MRzero simulation is not yet fully integrated, the current implementation uses a **Resampling Simulation**:
 1. **Trigger**: User clicks the "SCAN" button.
-2. **Execution**: The module automatically triggers `SequenceExplorer.executeFunction(silent=true, scanCounter)`. This creates a protocol snapshot under User Protocols (e.g. `1_prot_gre.py`) and ensures the pulse sequence is generated in memory without switching to Sequence Mode or showing a plot.
+2. **Execution**: The module automatically triggers `SequenceExplorer.executeFunction(silent=true, scanCounter)`. This creates a protocol snapshot under User Protocols (e.g. `1_prot_gre.py`) and ensures the pulse sequence is generated in memory without switching to Sequence Mode or showing a plot. As part of this silent execution, the Sequence Explorer reads `seq.definitions['FOV'/'fov']` (if present) from the last sequence object and emits `sequence_fov_dims` so that Niivue’s FOV size X/Y/Z are synchronized to the actual sequence FOV used for the scan.
 3. **Data Capture**:
     - The module retrieves the current base volume from Niivue.
     - It retrieves the current FOV box coordinates.

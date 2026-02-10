@@ -93,6 +93,9 @@
   flex-direction: column;
   background: var(--bg-elevated);
 }
+.niivue-app .layout.standalone-layout .standalone-sidebar .tabs-content.panel-collapsed {
+  display: none !important;
+}
 .niivue-app .layout.standalone-layout .standalone-sidebar .tab-pane {
   display: none;
   height: 100%;

@@ -42,6 +42,7 @@ const SEQ_TEMPLATES = {
                                 <div id="seq-current-name" style="font-size: 0.7rem; color: var(--muted); margin-top: 0.25rem; cursor: help;" title=""></div>
                             </div>
                             <div style="display: flex; gap: 0.5rem; align-items: center;">
+                                <button id="seq-get-fov-btn" style="padding: 0.4rem 0.32rem; background: rgba(255, 255, 255, 0.08); color: var(--text, #ddd); border: 1px solid var(--border, #333); border-radius: 4px; cursor: pointer; font-size: 0.75rem; font-weight: 500;">↖ set FOV</button>
                                 <button id="seq-edit-btn" style="padding: 0.4rem 0.32rem; background: rgba(255, 255, 255, 0.1); color: var(--text, #ddd); border: 1px solid var(--border, #333); border-radius: 4px; cursor: pointer; font-size: 0.875rem; font-weight: 500;">edit code</button>
                                 <button id="seq-execute-btn" style="padding: 0.4rem 0.32rem; background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.875rem; font-weight: 500;">plot seq</button>
                                 <button id="seq-pop-btn" style="padding: 0.4rem 0.32rem; background: rgba(255, 255, 255, 0.1); color: var(--text, #ddd); border: 1px solid var(--border, #333); border-radius: 4px; cursor: pointer; font-size: 0.875rem; font-weight: 500;">pop seq</button>
@@ -87,8 +88,9 @@ const SEQ_TEMPLATES = {
                         <div id="seq-current-name" style="font-size: 0.7rem; color: var(--muted); margin-top: 0.25rem; cursor: help;" title=""></div>
                     </div>
                     <div style="display: flex; gap: 0.5rem; align-items: center;">
-                        <button id="seq-edit-btn" class="btn btn-secondary btn-md">edit code</button>
-                        <button id="seq-execute-btn" class="btn btn-secondary btn-md">plot seq</button>
+                    <button id="seq-get-fov-btn" class="btn btn-secondary btn-md">↖ set FOV</button>
+                    <button id="seq-edit-btn" class="btn btn-secondary btn-md">edit code</button>
+                    <button id="seq-execute-btn" class="btn btn-secondary btn-md">plot seq</button>
                     </div>
                 </div>
                 <div id="seq-error-display" class="seq-error-message" style="display: none;"></div>
@@ -209,6 +211,10 @@ export class SequenceExplorer {
         if (editBtn) {
             editBtn.addEventListener('click', () => this.showCodeEditor());
         }
+        const getFovBtn = this.paramsTarget.querySelector('#seq-get-fov-btn');
+        if (getFovBtn) {
+            getFovBtn.addEventListener('click', () => this.getFovFromSequence());
+        }
     }
 
     renderPlot(target) {
@@ -252,7 +258,12 @@ export class SequenceExplorer {
                 this.executeFunction();
             });
         }
-        
+        const getFovBtn = this.container.querySelector('#seq-get-fov-btn');
+        if (getFovBtn) {
+            getFovBtn.addEventListener('click', () => {
+                this.getFovFromSequence();
+            });
+        }
         
         const popBtn = this.container.querySelector('#seq-pop-btn');
         if (popBtn) {
@@ -2251,6 +2262,82 @@ json.dumps(_result)
             }
             
             this.showStatus(resultObj.message || 'Function executed successfully', 'success');
+
+            // If this was a scan-triggered silent execution, emit FOV dimensions to Niivue (seq -> Niivue only)
+            if (silent && protocolName != null) {
+                try {
+                    const fovScript = `
+import json
+import __main__
+from seq_source_manager import SourceManager
+
+seq = getattr(SourceManager, '_last_sequence', None)
+if seq is None and hasattr(__main__, 'seq'):
+    seq = __main__.seq
+
+fov_vals = None
+if seq is not None:
+    # Prefer seq.definitions keys if available, match case-insensitively on 'fov'
+    defs = getattr(getattr(seq, 'definitions', None), 'keys', lambda: [])()
+    for k in defs:
+        try:
+            key_str = str(k)
+        except Exception:
+            continue
+        if key_str.lower() == 'fov':
+            try:
+                _val = seq.get_definition(k)
+            except Exception:
+                _val = None
+            if _val is not None:
+                fov_vals = _val
+                break
+
+out = None
+if fov_vals is not None:
+    try:
+        vals = list(fov_vals)
+    except TypeError:
+        vals = [fov_vals]
+
+    if len(vals) == 1:
+        vals = [vals[0], vals[0], vals[0]]
+    elif len(vals) == 2:
+        vals = [vals[0], vals[1], vals[1]]
+    elif len(vals) >= 3:
+        vals = [vals[0], vals[1], vals[2]]
+
+    try:
+        out = [float(v) * 1000.0 for v in vals]
+    except Exception:
+        out = None
+
+json.dumps(out)
+`.trim();
+
+                    const fovResult = await pyodide.runPythonAsync(fovScript);
+                    let fovMm = null;
+                    try {
+                        fovMm = JSON.parse(fovResult);
+                    } catch (e) {
+                        console.error('Failed to parse FOV JSON from Python (scan path):', e, fovResult);
+                    }
+
+                    if (Array.isArray(fovMm) && fovMm.length >= 2) {
+                        const fovXmm = Number(fovMm[0]) || 0;
+                        const fovYmm = Number(fovMm[1]) || 0;
+                        const fovZmm = Number((fovMm.length >= 3 ? fovMm[2] : fovMm[1])) || 0;
+
+                        eventHub.emit('sequence_fov_dims', {
+                            fov_x_mm: fovXmm,
+                            fov_y_mm: fovYmm,
+                            fov_z_mm: fovZmm
+                        });
+                    }
+                } catch (e) {
+                    console.error('Error emitting FOV after scan execution:', e);
+                }
+            }
             
         } catch (error) {
             console.error('Error executing function:', error);
@@ -2269,6 +2356,102 @@ json.dumps(_result)
         } finally {
             executeBtn.disabled = false;
             executeBtn.textContent = 'plot seq';
+        }
+    }
+
+    /**
+     * Run the current sequence with the current parameters and extract FOV from seq definitions.
+     * Sends the FOV (in mm) to the Niivue app via eventHub without plotting.
+     */
+    async getFovFromSequence() {
+        if (!this.selectedSequence || !this.config.pyodide) {
+            console.warn('No function selected or Pyodide not available');
+            return;
+        }
+
+        try {
+            const pyodide = this.config.pyodide;
+
+            // 1) Run the sequence once in silent mode using the same path as "plot seq"
+            await this.executeFunction(true);
+
+            // 2) After execution, read FOV from the last sequence object
+            const script = `
+import json
+import __main__
+from seq_source_manager import SourceManager
+
+seq = getattr(SourceManager, '_last_sequence', None)
+if seq is None and hasattr(__main__, 'seq'):
+    seq = __main__.seq
+
+fov_vals = None
+if seq is not None:
+    # Prefer seq.definitions keys if available, match case-insensitively on 'fov'
+    defs = getattr(getattr(seq, 'definitions', None), 'keys', lambda: [])()
+    for k in defs:
+        try:
+            key_str = str(k)
+        except Exception:
+            continue
+        if key_str.lower() == 'fov':
+            try:
+                _val = seq.get_definition(k)
+            except Exception:
+                _val = None
+            if _val is not None:
+                fov_vals = _val
+                break
+
+out = None
+if fov_vals is not None:
+    try:
+        vals = list(fov_vals)
+    except TypeError:
+        vals = [fov_vals]
+
+    if len(vals) == 1:
+        vals = [vals[0], vals[0], vals[0]]
+    elif len(vals) == 2:
+        vals = [vals[0], vals[1], vals[1]]
+    elif len(vals) >= 3:
+        vals = [vals[0], vals[1], vals[2]]
+
+    try:
+        out = [float(v) * 1000.0 for v in vals]
+    except Exception:
+        out = None
+
+json.dumps(out)
+`.trim();
+
+            const result = await pyodide.runPythonAsync(script);
+            let fovMm = null;
+            try {
+                fovMm = JSON.parse(result);
+            } catch (e) {
+                console.error('Failed to parse FOV JSON from Python:', e, result);
+            }
+
+            if (!Array.isArray(fovMm) || fovMm.length < 2) {
+                this.showStatus('No FOV definition found in sequence.', 'warn');
+                return;
+            }
+
+            const fovXmm = Number(fovMm[0]) || 0;
+            const fovYmm = Number(fovMm[1]) || 0;
+            const fovZmm = Number((fovMm.length >= 3 ? fovMm[2] : fovMm[1])) || 0;
+
+            eventHub.emit('sequence_fov_dims', {
+                fov_x_mm: fovXmm,
+                fov_y_mm: fovYmm,
+                fov_z_mm: fovZmm
+            });
+
+            this.showStatus(`FOV from sequence: ${fovXmm.toFixed(1)} x ${fovYmm.toFixed(1)} x ${fovZmm.toFixed(1)} mm`, 'info');
+        } catch (error) {
+            console.error('Error getting FOV from sequence:', error);
+            this.showStatus(`Error getting FOV: ${error.message || error}`, 'error');
         }
     }
     

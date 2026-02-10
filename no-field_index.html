@@ -70,6 +70,9 @@
             grid-template-rows: 1fr 320px;
             overflow: hidden;
         }
+        .lab-grid.sidebar-collapsed {
+            grid-template-columns: 100px 1fr;
+        }
 
         #slot-sidebar { 
             grid-area: sidebar; 
@@ -77,6 +80,23 @@
             border-bottom: 1px solid var(--border); 
             overflow-y: auto; 
             background: var(--bg-elevated); 
+        }
+        #slot-sidebar.sidebar-collapsed {
+            min-width: 0;
+            width: 100%;
+            overflow: hidden;
+        }
+        #slot-sidebar.sidebar-collapsed .tabs-header {
+            flex-direction: column;
+            flex-wrap: nowrap;
+        }
+        #slot-sidebar.sidebar-collapsed .tab-btn {
+            flex: 0 0 auto;
+            min-height: 34px;
+        }
+        #slot-sidebar.sidebar-collapsed .tab-btn[data-tab="view"],
+        #slot-sidebar.sidebar-collapsed .tab-btn[data-tab="fov"] {
+            display: none;
         }
         #slot-main { 
             grid-area: main; 
@@ -137,6 +157,9 @@
             display: flex;
             flex-direction: column;
             background: var(--bg-elevated);
+        }
+        .tabs-content.panel-collapsed {
+            display: none !important;
         }
         .tab-pane {
             display: none;

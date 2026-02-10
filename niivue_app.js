@@ -101,6 +101,25 @@ export class NiivueModule {
     return new Promise(resolve => this._initWaiters.push(resolve));
   }
 
+  /**
+   * Apply FOV dimensions coming from the sequence explorer (seq → Niivue, dimensions only).
+   * Expects values in millimeters and only updates size X/Y/Z, leaving offsets and rotations untouched.
+   */
+  applySequenceFovDimensions(data) {
+    if (!data || !this.fovX || !this.fovY || !this.fovZ || !this.fovXVal || !this.fovYVal || !this.fovZVal) return;
+    const { fov_x_mm, fov_y_mm, fov_z_mm } = data;
+    const setVal = (slider, numInput, mmVal) => {
+      if (mmVal === undefined || mmVal === null || Number.isNaN(Number(mmVal))) return;
+      const v = String(Math.round(Number(mmVal)));
+      slider.value = v;
+      numInput.value = v;
+    };
+    setVal(this.fovX, this.fovXVal, fov_x_mm);
+    setVal(this.fovY, this.fovYVal, fov_y_mm);
+    setVal(this.fovZ, this.fovZVal, fov_z_mm);
+    this.rebuildFovLive(true);
+  }
+
   renderViewer(target) {
     this.containerViewer = typeof target === 'string' ? document.getElementById(target) : target;
     if (!this.containerViewer) throw new Error(`Viewer target not found: ${target}`);
@@ -162,14 +181,29 @@ export class NiivueModule {
         </div>
       `;
       
-      // Bind tab switching
+      // Bind tab switching (click active VIEWER tab toggles collapse: whole sidebar narrows, main gets full width)
       const buttons = this.containerControls.querySelectorAll('.tab-btn');
       const panes = this.containerControls.querySelectorAll('.tab-pane');
+      const tabsContent = this.containerControls.querySelector('.tabs-content');
       buttons.forEach(btn => {
         btn.onclick = () => {
           if (window.viewManager && window.viewManager.currentMode !== 'planning') {
             window.viewManager.setMode('planning');
           }
+          // Resolve at click time (controls may have been in module-cache at setup)
+          const slotSidebar = this.containerControls.closest('#slot-sidebar');
+          const labGrid = this.containerControls.closest('.lab-grid');
+          const wasActive = btn.classList.contains('active');
+          const isSource = btn.dataset.tab === 'source';
+          if (wasActive && isSource) {
+            if (tabsContent) tabsContent.classList.toggle('panel-collapsed');
+            if (slotSidebar) slotSidebar.classList.toggle('sidebar-collapsed');
+            if (labGrid) labGrid.classList.toggle('sidebar-collapsed');
+            return;
+          }
+          if (tabsContent) tabsContent.classList.remove('panel-collapsed');
+          if (slotSidebar) slotSidebar.classList.remove('sidebar-collapsed');
+          if (labGrid) labGrid.classList.remove('sidebar-collapsed');
           buttons.forEach(b => b.classList.remove('active'));
           panes.forEach(p => p.classList.remove('active'));
           btn.classList.add('active');
@@ -761,6 +795,9 @@ def run_resampling(source_bytes, reference_bytes):
         }
       }
     };
+
+    // Listen for FOV updates coming from the sequence explorer (seq → Niivue, dimensions only)
+    eventHub.on('sequence_fov_dims', (data) => this.applySequenceFovDimensions(data));
   }
 
   // --- Logic methods (unmodified from original) ---

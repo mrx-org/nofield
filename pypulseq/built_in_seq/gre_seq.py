@@ -6,11 +6,11 @@ import pypulseq as pp
 
 
 def seq_gre(
-    fov: tuple = (256e-3, 256e-3, 3e-3),                  # Define FOV and resolution
+    fov_xy: tuple = (256e-3, 256e-3),                  # Define FOV and resolution
+    slice_thickness: float = 3e-3,        # slice
     Nread: int = 64,
     Nphase: int = 64,
     alpha: float = 10,                    # flip angle
-    slice_thickness: float = 3e-3,        # slice
     TR: float = 12e-3,                    # Repetition time
     TE: float = 5e-3,                     # Echo time
     rf_spoiling_inc: float = 117 ,         # RF spoiling increment
@@ -24,7 +24,7 @@ def seq_gre(
 
     Parameters
     ----------
-    fov : float, optional
+    fov_xy : float, optional
         Field of view in meters (default: 256e-3).
     Nx : int, optional
         Number of samples in the readout (default: 64).
@@ -99,8 +99,8 @@ def seq_gre(
         use='excitation',
     )
     # Define other gradients and ADC events
-    delta_kx = 1 / fov[0]
-    delta_ky = 1 / fov[1]
+    delta_kx = 1 / fov_xy[0]
+    delta_ky = 1 / fov_xy[1]
     gx = pp.make_trapezoid(channel='x', flat_area=Nread * delta_kx, flat_time=3.2e-3, system=system)
     adc = pp.make_adc(num_samples=Nread, duration=gx.flat_time, delay=gx.rise_time, system=system)
     gx_pre = pp.make_trapezoid(channel='x', area=-gx.area / 2, duration=1e-3, system=system)
@@ -187,7 +187,7 @@ def seq_gre(
     print(rep)
 
     # Prepare the sequence output for the scanner
-    seq.set_definition(key='FOV', value=[fov[0], fov[1], slice_thickness])
+    seq.set_definition(key='FOV', value=[fov_xy[0], fov_xy[1], slice_thickness])
     seq.set_definition(key='Name', value='gre')
 
     # =========
