@@ -224,9 +224,12 @@ export class SequenceExplorer {
             colParams.style.cursor = 'pointer';
             colParams.addEventListener('click', (e) => {
                 const isCollapsed = footer.classList.contains('params-collapsed');
+                // Normalize target for mobile (text nodes etc.)
+                const targetEl = e.target instanceof Element ? e.target : e.target?.parentElement;
                 if (!isCollapsed) {
                     // Only collapse if the original PROTOCOL heading was clicked
-                    const inHeader = e.target.closest('.seq-params-toggle');
+                    if (!targetEl) return;
+                    const inHeader = targetEl.closest('.seq-params-toggle');
                     if (!inHeader) return;
                     colParams.dataset.fullHtml = colParams.innerHTML;
                     colParams.innerHTML = `<h3 class="section-title" style="margin: 0; text-align: center;">P</h3>`;
@@ -1406,9 +1409,12 @@ json.dumps(functions)
             colTree.style.cursor = 'pointer';
             colTree.addEventListener('click', (e) => {
                 const isCollapsed = footer.classList.contains('tree-collapsed');
+                // Normalize target for mobile (text nodes etc.)
+                const targetEl = e.target instanceof Element ? e.target : e.target?.parentElement;
                 if (!isCollapsed) {
                     // Only collapse if the original SEQUENCES heading was clicked
-                    const inHeader = e.target.closest('.seq-tree-toggle');
+                    if (!targetEl) return;
+                    const inHeader = targetEl.closest('.seq-tree-toggle');
                     if (!inHeader) return;
                     colTree.dataset.fullHtml = colTree.innerHTML;
                     colTree.innerHTML = `<h3 class="section-title" style="margin: 0; text-align: center;">S</h3>`;
