@@ -592,6 +592,39 @@ export class NiivueModule {
     window.addEventListener("mousemove", (e) => this.handleMouseMove(e));
     window.addEventListener("mouseup", () => this.handleMouseUp());
     this.canvas.addEventListener("wheel", (e) => this.handleWheel(e), { passive: false, capture: true });
+    
+    // Touch events for FOV dragging (single finger touch = FOV drag when FOV visible)
+    this.canvas.addEventListener("touchstart", (e) => {
+        if (e.touches.length === 1 && this.showFov?.checked) {
+            const touch = e.touches[0];
+            this.handleMouseDown({ 
+                clientX: touch.clientX, 
+                clientY: touch.clientY, 
+                button: 0, 
+                ctrlKey: true,  // Simulate Ctrl for FOV drag
+                preventDefault: () => e.preventDefault(),
+                stopPropagation: () => e.stopPropagation(),
+                stopImmediatePropagation: () => e.stopImmediatePropagation()
+            });
+        }
+    }, { passive: false, capture: true });
+    window.addEventListener("touchmove", (e) => {
+        if (this.isDraggingFov && e.touches.length === 1) {
+            const touch = e.touches[0];
+            e.preventDefault();
+            this.handleMouseMove({ 
+                clientX: touch.clientX, 
+                clientY: touch.clientY,
+                preventDefault: () => {},
+                stopPropagation: () => {}
+            });
+        }
+    }, { passive: false });
+    window.addEventListener("touchend", () => {
+        if (this.isDraggingFov) {
+            this.handleMouseUp();
+        }
+    });
 
     setInterval(() => this.updateAngles(), 200);
     setInterval(() => this.updateCrosshairVox(), 150);
@@ -991,9 +1024,8 @@ def run_resampling(source_bytes, reference_bytes):
             return;
          }
 
-         // Ctrl + Mouse Drag: FOV Actions (on mobile, no Ctrl needed if FOV is visible)
-         const mobileFovDrag = this.isMobileMode() && this.showFov?.checked && e.button === 0;
-         if (e.ctrlKey || mobileFovDrag) {
+         // Ctrl + Mouse Drag: FOV Actions
+         if (e.ctrlKey) {
             e.preventDefault();
             this.savedDragMode = this.nv.opts.dragMode;
             this.nv.opts.dragMode = DRAG_MODE.callbackOnly;
@@ -1101,11 +1133,6 @@ def run_resampling(source_bytes, reference_bytes):
          }
          if (this.isDraggingFov) { this.isDraggingFov = false; this.nv.opts.dragMode = this.savedDragMode; this.setStatus("FOV Drag finished"); this.syncFovLabels(); }
          if (this.isRotatingFov) { this.isRotatingFov = false; this.nv.opts.dragMode = this.savedDragMode; this.setStatus("FOV Rotate finished"); this.syncFovLabels(); }
-  }
-
-  /** Check if we're in mobile mode */
-  isMobileMode() {
-      return window.matchMedia('(max-width: 768px)').matches;
   }
 
   handleWheel(e) {

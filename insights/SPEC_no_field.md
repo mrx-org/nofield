@@ -55,10 +55,11 @@ The dashboard includes specific adaptations for mobile devices (viewport ≤768p
 
 ### Touch Interactions
 - **Footer dot swiping**: The dot indicator area responds to swipe gestures to navigate between footer cards.
-- **FOV dragging without Ctrl**: When the FOV checkbox is enabled, single-finger touch directly drags the FOV box position (no Ctrl key required, unlike desktop).
+- **FOV touch dragging**: When the FOV checkbox is enabled, single-finger touch directly drags the FOV box position.
   - Touch centers the FOV at the initial touch point
   - Dragging moves the FOV in the slice plane
-  - This mirrors how Niivue's crosshair responds to touch on mobile
+  - Works on any touch-enabled device (not limited to mobile viewport)
+  - Desktop still uses Ctrl + mouse drag
 
 ### CSS Overrides
 Mobile-specific styles are defined in `no_field_mobile.css`:
