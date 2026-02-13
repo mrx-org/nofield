@@ -28,7 +28,6 @@
         gap: 8px;
         height: 28px;
         background: var(--bg-elevated);
-        pointer-events: none;
     }
     .footer-wrapper .footer-card-dots .dot {
         width: 6px;

@@ -455,7 +455,7 @@
                 window.seqExplorer = explorer;
                 window.scanPreview = scanPreview;
 
-                // Footer card dots: update active dot on scroll (mobile)
+                // Footer card dots: update active dot on scroll, swipe on dots area to change cards (mobile)
                 (function initFooterCardDots() {
                     const footer = document.getElementById('slot-footer');
                     const dots = document.getElementById('footer-card-dots');
@@ -470,6 +470,42 @@
                     };
                     footer.addEventListener('scroll', updateDots, { passive: true });
                     updateDots();
+
+                    let dotsStartX = 0;
+                    dots.addEventListener('touchstart', (e) => {
+                        if (!window.matchMedia('(max-width: 768px)').matches) return;
+                        dotsStartX = e.touches[0].clientX;
+                    }, { passive: true });
+                    dots.addEventListener('touchend', (e) => {
+                        if (!window.matchMedia('(max-width: 768px)').matches) return;
+                        const endX = e.changedTouches[0].clientX;
+                        const delta = dotsStartX - endX;
+                        const cardWidth = footer.scrollWidth / 3;
+                        if (delta > 40) {
+                            const next = Math.min(2, Math.round(footer.scrollLeft / cardWidth) + 1);
+                            footer.scrollTo({ left: next * cardWidth, behavior: 'smooth' });
+                        } else if (delta < -40) {
+                            const prev = Math.max(0, Math.round(footer.scrollLeft / cardWidth) - 1);
+                            footer.scrollTo({ left: prev * cardWidth, behavior: 'smooth' });
+                        }
+                    }, { passive: true });
+                })();
+
+                // Start with sidebar collapsed on mobile
+                (function initMobileSidebarCollapsed() {
+                    if (!window.matchMedia('(max-width: 768px)').matches) return;
+                    const labGrid = document.querySelector('.lab-grid');
+                    const slotSidebar = document.getElementById('slot-sidebar');
+                    const tabsContent = document.querySelector('.tabs-content');
+                    const viewerBtn = document.querySelector('.tab-btn[data-tab="source"]');
+                    if (labGrid && slotSidebar) {
+                        labGrid.classList.add('sidebar-collapsed');
+                        slotSidebar.classList.add('sidebar-collapsed');
+                        if (tabsContent) tabsContent.classList.add('panel-collapsed');
+                        if (viewerBtn) {
+                            viewerBtn.textContent = viewerBtn.dataset.collapsedLabel || 'V';
+                        }
+                    }
                 })();
 
                 // Swipe left on sidebar to collapse, swipe right to expand (mobile)
