@@ -107,15 +107,23 @@
         }
         #slot-main.scrollable { overflow-y: auto; }
         
+        .footer-wrapper {
+            grid-area: footer;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            min-height: 0;
+        }
+        .footer-wrapper .footer-card-dots { display: none; }
         #slot-footer { 
-            grid-area: footer; 
+            flex: 1;
+            min-height: 0;
             display: grid; 
             grid-template-columns: 1fr 0.8fr 1.5fr; 
             gap: 1px; 
             background: var(--border); 
             overflow: hidden; 
         }
-        #slot-footer .footer-card-dots { display: none; }
         /* Footer collapse behaviors: SEQUENCES (tree) and PROTOCOL (params) */
         #slot-footer.tree-collapsed {
             grid-template-columns: 30px 0.8fr 1.8fr;
@@ -249,15 +257,17 @@
         <div class="lab-grid">
             <div id="slot-sidebar"></div>
             <div id="slot-main"></div>
-            <div id="slot-footer">
+            <div class="footer-wrapper">
                 <div class="footer-card-dots" id="footer-card-dots" aria-hidden="true">
                     <span class="dot" data-card="0"></span>
                     <span class="dot" data-card="1"></span>
                     <span class="dot" data-card="2"></span>
                 </div>
-                <div id="col-tree" class="footer-col"></div>
-                <div id="col-scan" class="footer-col"></div>
-                <div id="col-params" class="footer-col"></div>
+                <div id="slot-footer">
+                    <div id="col-tree" class="footer-col"></div>
+                    <div id="col-scan" class="footer-col"></div>
+                    <div id="col-params" class="footer-col"></div>
+                </div>
             </div>
         </div>
     </div>

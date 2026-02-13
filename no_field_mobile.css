@@ -4,10 +4,11 @@
    ============================================ */
 
 @media (max-width: 768px) {
-    /* Sidebar: 20% narrower on mobile */
+    /* Footer 15% taller on mobile (320 → 368px), viewer shrinks accordingly */
     .lab-grid {
         --sidebar-width: 200px;
         grid-template-columns: 200px 1fr;
+        grid-template-rows: 1fr 368px;
     }
     .lab-grid.sidebar-collapsed {
         grid-template-columns: 24px 1fr;
@@ -18,8 +19,34 @@
         display: none !important;
     }
 
+    /* Footer: dots fixed at top, cards scroll below (dots outside scroll container) */
+    .footer-wrapper .footer-card-dots {
+        display: flex;
+        flex-shrink: 0;
+        justify-content: center;
+        align-items: center;
+        gap: 8px;
+        height: 28px;
+        background: var(--bg-elevated);
+        pointer-events: none;
+    }
+    .footer-wrapper .footer-card-dots .dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--muted);
+        opacity: 0.4;
+        transition: opacity 0.2s, background 0.2s;
+    }
+    .footer-wrapper .footer-card-dots .dot.active {
+        opacity: 1;
+        background: var(--accent);
+    }
+
     /* Footer: horizontal scroll-snap, one card per column */
     #slot-footer {
+        flex: 1;
+        min-height: 0;
         display: flex;
         flex-direction: row;
         grid-template-columns: unset;
@@ -29,34 +56,12 @@
         -webkit-overflow-scrolling: touch;
         gap: 1px;
         background: var(--bg-elevated);
-        position: relative;
-        padding-top: 28px;
     }
-    #slot-footer .footer-card-dots {
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        gap: 8px;
-        position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        height: 28px;
-        z-index: 1;
-        pointer-events: none;
-    }
-    #slot-footer .footer-card-dots .dot {
-        width: 6px;
-        height: 6px;
-        border-radius: 50%;
-        background: var(--muted);
-        opacity: 0.4;
-        transition: opacity 0.2s, background 0.2s;
-    }
-    #slot-footer .footer-card-dots .dot.active {
-        opacity: 1;
-        background: var(--accent);
-    }
+
+    /* Reorder footer cards on mobile: SEQUENCES | PROTOCOL | Run */
+    #slot-footer #col-tree { order: 1; }
+    #slot-footer #col-params { order: 2; }
+    #slot-footer #col-scan { order: 3; }
 
     /* Each footer column is a full-width card */
     #slot-footer .footer-col,
