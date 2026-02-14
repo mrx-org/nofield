@@ -36,6 +36,8 @@ export class NiivueModule {
     this.lastLocationVox = null;
     this.lastLocationMm = null;
     this.fovUpdatePending = false;
+    this.isTwoFingerRotating = false;
+    this.touchRotateStartAngle = 0;
 
     // Elements (will be set in render methods)
     this.containerViewer = null;
@@ -133,8 +135,7 @@ export class NiivueModule {
         <canvas id="${this.canvasId}"></canvas>
         <div class="status" id="statusOverlay-${this.instanceId}">idle</div>
         <div class="viewer-hint" style="position: absolute; bottom: 8px; right: 8px; font-size: 11px; color: rgba(255,255,255,0.7); pointer-events: none; text-shadow: 0 1px 2px rgba(0,0,0,0.8);">
-          CTRL + mouse to change FoV<br>
-          <span id="crosshairVoxVal-${this.instanceId}">—</span>
+          CTRL + mouse to change FoV
         </div>
       </div>
     `;
@@ -462,7 +463,6 @@ export class NiivueModule {
     this.voxVal = qs("voxVal");
     this.mmVal = qs("mmVal");
     this.locStrVal = qs("locStrVal");
-    this.crosshairVoxVal = qs("crosshairVoxVal") || document.getElementById(`crosshairVoxVal-${this.instanceId}`);
     this.volumeListContainer = qs("volume-list");
     this.btnAddFile = qs("btn-add-file");
     this.btnAddFolder = qs("btn-add-folder");
@@ -577,11 +577,10 @@ export class NiivueModule {
         
         if (this.locStrVal) this.locStrVal.textContent = str ? String(str) : "—";
 
-        if (this.crosshairVoxVal && (Array.isArray(vox) || ArrayBuffer.isView(vox)) && vox.length >= 3) {
-          this.crosshairVoxVal.textContent = `Voxel ${Number(vox[0]).toFixed(1)}, ${Number(vox[1]).toFixed(1)}, ${Number(vox[2]).toFixed(1)}`;
+        // Store coordinates for FOV positioning
+        if ((Array.isArray(vox) || ArrayBuffer.isView(vox)) && vox.length >= 3) {
           this.lastLocationVox = [Number(vox[0]), Number(vox[1]), Number(vox[2])];
         }
-        // Also store world mm coordinates for FOV positioning
         if ((Array.isArray(mm) || ArrayBuffer.isView(mm)) && mm.length >= 3) {
           this.lastLocationMm = [Number(mm[0]), Number(mm[1]), Number(mm[2])];
         }
@@ -593,23 +592,60 @@ export class NiivueModule {
     window.addEventListener("mouseup", () => this.handleMouseUp());
     this.canvas.addEventListener("wheel", (e) => this.handleWheel(e), { passive: false, capture: true });
     
-    // Touch events for FOV dragging (single finger touch = FOV drag when FOV visible)
+    // Touch events for FOV manipulation (when FOV visible):
+    // - Single finger: drag FOV position
+    // - Two fingers: rotate FOV (twist gesture)
     this.canvas.addEventListener("touchstart", (e) => {
-        if (e.touches.length === 1 && this.showFov?.checked) {
+        if (!this.showFov?.checked) return;
+        
+        if (e.touches.length === 1) {
+            // Single finger = FOV drag
             const touch = e.touches[0];
             this.handleMouseDown({ 
                 clientX: touch.clientX, 
                 clientY: touch.clientY, 
                 button: 0, 
-                ctrlKey: true,  // Simulate Ctrl for FOV drag
+                ctrlKey: true,
                 preventDefault: () => e.preventDefault(),
                 stopPropagation: () => e.stopPropagation(),
                 stopImmediatePropagation: () => e.stopImmediatePropagation()
             });
+        } else if (e.touches.length === 2) {
+            // Two fingers = FOV rotation
+            e.preventDefault();
+            if (window.viewManager && window.viewManager.currentMode !== 'planning') {
+                window.viewManager.setMode('planning');
+            }
+            this.savedDragMode = this.nv.opts.dragMode;
+            this.nv.opts.dragMode = DRAG_MODE.callbackOnly;
+            
+            // Calculate midpoint for determining which slice we're on
+            const t1 = e.touches[0], t2 = e.touches[1];
+            const midX = (t1.clientX + t2.clientX) / 2;
+            const midY = (t1.clientY + t2.clientY) / 2;
+            this.dragStartTileIndex = this.updateViewFromMouse({ clientX: midX, clientY: midY });
+            
+            // Calculate initial angle between the two touch points
+            this.touchRotateStartAngle = Math.atan2(t2.clientY - t1.clientY, t2.clientX - t1.clientX);
+            
+            // Get current rotation value based on slice orientation
+            let startVal = 0;
+            if (this.currentAxCorSag === 0) startVal = Number(this.fovRotZ.value);
+            else if (this.currentAxCorSag === 1) startVal = Number(this.fovRotY.value);
+            else startVal = Number(this.fovRotX.value);
+            this.dragStartRotation = startVal;
+            
+            this.isRotatingFov = true;
+            this.isTwoFingerRotating = true;
+            this.setStatus("Rotating FOV...");
         }
     }, { passive: false, capture: true });
+    
     window.addEventListener("touchmove", (e) => {
+        if (!this.showFov?.checked) return;
+        
         if (this.isDraggingFov && e.touches.length === 1) {
+            // Single finger drag
             const touch = e.touches[0];
             e.preventDefault();
             this.handleMouseMove({ 
@@ -618,16 +654,49 @@ export class NiivueModule {
                 preventDefault: () => {},
                 stopPropagation: () => {}
             });
+        } else if (this.isTwoFingerRotating && e.touches.length === 2) {
+            // Two finger rotation
+            e.preventDefault();
+            const t1 = e.touches[0], t2 = e.touches[1];
+            const currentAngle = Math.atan2(t2.clientY - t1.clientY, t2.clientX - t1.clientX);
+            let deltaRad = currentAngle - this.touchRotateStartAngle;
+            
+            // Normalize to -PI to PI
+            while (deltaRad <= -Math.PI) deltaRad += 2 * Math.PI;
+            while (deltaRad > Math.PI) deltaRad -= 2 * Math.PI;
+            
+            let deltaDeg = deltaRad * (180 / Math.PI);
+            let finalRot = this.dragStartRotation - deltaDeg;
+            
+            // Normalize rotation to -180 to 180
+            const norm = (v) => {
+                let n = v % 360;
+                if (n > 180) n -= 360;
+                if (n < -180) n += 360;
+                return n;
+            };
+            
+            if (this.currentAxCorSag === 0) this.fovRotZ.value = String(norm(finalRot).toFixed(1));
+            else if (this.currentAxCorSag === 1) this.fovRotY.value = String(norm(finalRot).toFixed(1));
+            else this.fovRotX.value = String(norm(finalRot).toFixed(1));
+            this.rebuildFovLive();
         }
     }, { passive: false });
-    window.addEventListener("touchend", () => {
-        if (this.isDraggingFov) {
+    
+    window.addEventListener("touchend", (e) => {
+        if (this.isDraggingFov && !this.isTwoFingerRotating) {
             this.handleMouseUp();
+        }
+        if (this.isTwoFingerRotating && e.touches.length < 2) {
+            this.isTwoFingerRotating = false;
+            this.isRotatingFov = false;
+            this.nv.opts.dragMode = this.savedDragMode;
+            this.setStatus("FOV Rotate finished");
+            this.syncFovLabels();
         }
     });
 
     setInterval(() => this.updateAngles(), 200);
-    setInterval(() => this.updateCrosshairVox(), 150);
     this.setStatus("ready");
     this.isInitialized = true;
     this._initWaiters.forEach(resolve => resolve());
@@ -967,30 +1036,6 @@ def run_resampling(source_bytes, reference_bytes):
       if (Number.isFinite(az) && Number.isFinite(el)) return [az, el];
     }
     return null;
-  }
-
-  updateCrosshairVox() {
-    if (!this.crosshairVoxVal) return;
-    try {
-      const frac = this.nv?.scene?.crosshairPos;
-      const f0 = frac?.[0] ?? frac?.x;
-      const f1 = frac?.[1] ?? frac?.y;
-      const f2 = frac?.[2] ?? frac?.z;
-      if (f0 == null || f1 == null || f2 == null) {
-        this.crosshairVoxVal.textContent = "—";
-        return;
-      }
-      const { dim3 } = this.getVolumeInfo();
-      if (!dim3) {
-        this.crosshairVoxVal.textContent = "—";
-        return;
-      }
-      const [dx, dy, dz] = dim3;
-      const vx = Number(f0) * (dx - 1), vy = Number(f1) * (dy - 1), vz = Number(f2) * (dz - 1);
-      this.crosshairVoxVal.textContent = `Voxel ${vx.toFixed(1)}, ${vy.toFixed(1)}, ${vz.toFixed(1)}`;
-    } catch (e) {
-      this.crosshairVoxVal.textContent = "—";
-    }
   }
 
   updateAngles() {
