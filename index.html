@@ -259,9 +259,11 @@
             <div id="slot-main"></div>
             <div class="footer-wrapper">
                 <div class="footer-card-dots" id="footer-card-dots" aria-hidden="true">
-                    <span class="dot" data-card="0"></span>
-                    <span class="dot" data-card="1"></span>
-                    <span class="dot" data-card="2"></span>
+                    <span class="footer-card-tab" data-card="0">seq</span>
+                    <span class="footer-card-dot-sep" aria-hidden="true">•</span>
+                    <span class="footer-card-tab" data-card="1">prot</span>
+                    <span class="footer-card-dot-sep" aria-hidden="true">•</span>
+                    <span class="footer-card-tab" data-card="2">scan</span>
                 </div>
                 <div id="slot-footer">
                     <div id="col-tree" class="footer-col"></div>
@@ -519,21 +521,29 @@
                 window.seqExplorer = explorer;
                 window.scanPreview = scanPreview;
 
-                // Footer card dots: update active dot on scroll, swipe on dots area to change cards (mobile)
+                // Footer card tabs (seq | prot | scan): update active on scroll, click/tap to switch card, swipe to change (mobile)
                 (function initFooterCardDots() {
                     const footer = document.getElementById('slot-footer');
                     const dots = document.getElementById('footer-card-dots');
                     if (!footer || !dots) return;
-                    const dotEls = dots.querySelectorAll('.dot');
-                    if (dotEls.length !== 3) return;
-                    const updateDots = () => {
+                    const tabEls = dots.querySelectorAll('.footer-card-tab[data-card]');
+                    if (tabEls.length !== 3) return;
+                    const updateActive = () => {
                         const cardWidth = footer.scrollWidth / 3;
                         const idx = Math.round(footer.scrollLeft / cardWidth);
                         const i = Math.max(0, Math.min(2, idx));
-                        dotEls.forEach((d, k) => d.classList.toggle('active', k === i));
+                        tabEls.forEach((el, k) => el.classList.toggle('active', k === i));
                     };
-                    footer.addEventListener('scroll', updateDots, { passive: true });
-                    updateDots();
+                    footer.addEventListener('scroll', updateActive, { passive: true });
+                    updateActive();
+
+                    tabEls.forEach((el, i) => {
+                        el.addEventListener('click', () => {
+                            if (!window.matchMedia('(max-width: 768px)').matches) return;
+                            const cardWidth = footer.scrollWidth / 3;
+                            footer.scrollTo({ left: i * cardWidth, behavior: 'smooth' });
+                        });
+                    });
 
                     let dotsStartX = 0;
                     dots.addEventListener('touchstart', (e) => {
