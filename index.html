@@ -69,6 +69,23 @@
             grid-template-columns: var(--sidebar-width) 1fr;
             grid-template-rows: 1fr 320px;
             overflow: hidden;
+            position: relative;
+        }
+        /* Loader overlays only the right half of main (scan-preview side); left half shows Niivue + demo ASAP */
+        .loading-overlay.main-area-loader {
+            grid-area: main;
+            position: absolute;
+            left: 50%;
+            right: 0;
+            top: 0;
+            bottom: 0;
+            z-index: 10;
+        }
+        .footer-wrapper.footer-pending {
+            display: none !important;
+        }
+        #nv-viewer-container.viewer-waiting-demo {
+            visibility: hidden;
         }
         .lab-grid.sidebar-collapsed {
             grid-template-columns: 30px 1fr;
@@ -213,30 +230,6 @@
     <link rel="stylesheet" href="no_field_mobile.css" media="(max-width: 768px)">
 </head>
 <body>
-        <div id="loader" class="loading-overlay">
-        <div class="scene">
-            <div class="shadow-nucleus"></div>
-            <div class="shadow-floor">
-                <div class="shadow-rotator">
-                    <div class="shadow-bar">
-                        <div class="shadow-head"></div>
-                    </div>
-                </div>
-            </div>
-            <div class="nucleus"></div>
-            <div class="z-controller">
-                <div class="arrow-pivot">
-                    <div class="stick-wrapper">
-                        <div class="shaft"></div>
-                        <div class="head"></div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        <!-- Text is driven purely by CSS (.loader-text::after) during loading -->
-        <div id="loader-text" class="loader-text"></div>
-    </div>
-
     <div class="lab-shell">
         <header>
             <div class="header-content">
@@ -257,7 +250,29 @@
         <div class="lab-grid">
             <div id="slot-sidebar"></div>
             <div id="slot-main"></div>
-            <div class="footer-wrapper">
+            <div id="loader" class="loading-overlay main-area-loader" aria-hidden="true">
+                <div class="scene">
+                    <div class="shadow-nucleus"></div>
+                    <div class="shadow-floor">
+                        <div class="shadow-rotator">
+                            <div class="shadow-bar">
+                                <div class="shadow-head"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="nucleus"></div>
+                    <div class="z-controller">
+                        <div class="arrow-pivot">
+                            <div class="stick-wrapper">
+                                <div class="shaft"></div>
+                                <div class="head"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div id="loader-text" class="loader-text"></div>
+            </div>
+            <div class="footer-wrapper footer-pending">
                 <div class="footer-card-dots" id="footer-card-dots" aria-hidden="true">
                     <span class="footer-card-tab" data-card="0">seq</span>
                     <span class="footer-card-dot-sep" aria-hidden="true">•</span>
@@ -451,23 +466,23 @@
         }
 
         async function bootstrap() {
-            const loaderText = document.getElementById('loader-text');
-            
             try {
-                // A. START PYODIDE & PACKAGES IN BACKGROUND
+                // A. START PYODIDE & PACKAGES IN BACKGROUND (do not await)
                 const pyodidePromise = (async () => {
                     const py = await loadPyodide({
                         indexURL: "https://cdn.jsdelivr.net/pyodide/v0.29.0/full/",
                     });
-                    await py.loadPackage(['numpy', 'scipy', 'matplotlib', 'micropip']);
-                    
+                    await py.loadPackage(['numpy', 'scipy', 'micropip']);
                     const micropip = py.pyimport("micropip");
-                    await micropip.install(['pypulseq', 'nibabel']);
+                    await Promise.all([
+                        micropip.install('pypulseq'),
+                        micropip.install('nibabel')
+                    ]);
                     return py;
                 })();
 
-                // B. INITIALIZE MODULES IMMEDIATELY (Parallel to Step A)
-                const nvModule = new NiivueModule(); 
+                // B. FAST PATH: show sidebar + main (Niivue) immediately
+                const nvModule = new NiivueModule();
                 nvModule.renderViewer('nv-viewer-container');
                 nvModule.renderControls('nv-controls-container', true);
 
@@ -489,39 +504,23 @@
                 const scanPreview = new ScanPreviewModule();
                 scanPreview.render('nv-scan-preview-container');
 
-                // C. FETCH CONFIG IN PARALLEL
                 const configPromise = explorer.getDefaultSourcesConfig();
 
-                // D. WAIT FOR PYTHON TO BE READY
-                const pyodide = await pyodidePromise;
-                nvModule.pyodide = pyodide;
-                explorer.config.pyodide = pyodide;
-
-                // E. RUN PYTHON-DEPENDENT SETUP IN PARALLEL
-                const configCode = await configPromise;
-                await Promise.all([
-                    nvModule.initPyodide(), // Initialize resampling tools on the shared instance
-                    explorer.installOptimizedPlotFunction(),
-                    explorer.detectVersions(),
-                    explorer.loadSourcesFromConfig(configCode)
-                ]);
-
-                // 4. Initialize ViewManager
                 const viewManager = new ViewManager(nvModule, explorer, scanModule, scanPreview);
                 viewManager.setMode('planning');
 
-                // Load demo volume on startup
-                nvModule.loadUrl(nvModule.DEMO_URL, "mni152.nii.gz", true);
+                const mainViewerEl = document.getElementById('nv-viewer-container');
+                if (mainViewerEl) mainViewerEl.classList.add('viewer-waiting-demo');
+                nvModule.loadUrl(nvModule.DEMO_URL, "mni152.nii.gz", true).then(() => {
+                    if (mainViewerEl) mainViewerEl.classList.remove('viewer-waiting-demo');
+                });
 
-                // Hide loader
-                document.getElementById('loader').classList.add('hidden');
-                
                 window.viewManager = viewManager;
                 window.nvModule = nvModule;
                 window.seqExplorer = explorer;
                 window.scanPreview = scanPreview;
 
-                // Footer card tabs (seq | prot | scan): update active on scroll, click/tap to switch card, swipe to change (mobile)
+                // Footer listeners (footer stays hidden until Pyodide ready)
                 (function initFooterCardDots() {
                     const footer = document.getElementById('slot-footer');
                     const dots = document.getElementById('footer-card-dots');
@@ -617,6 +616,36 @@
                         }
                     }, { passive: true });
                 })();
+
+                // C. WHEN PYODIDE IS READY: finish setup, then hide loader and show footer
+                function hideLoaderAndShowFooter() {
+                    const loaderEl = document.getElementById('loader');
+                    const footerWrapper = document.querySelector('.footer-wrapper');
+                    if (loaderEl) loaderEl.classList.add('hidden');
+                    if (footerWrapper) footerWrapper.classList.remove('footer-pending');
+                }
+
+                pyodidePromise.then(async (pyodide) => {
+                    nvModule.pyodide = pyodide;
+                    explorer.config.pyodide = pyodide;
+                    const configCode = await configPromise;
+                    await Promise.all([
+                        nvModule.initPyodide(),
+                        explorer.detectVersions(),
+                        explorer.loadSourcesFromConfig(configCode)
+                    ]);
+                    hideLoaderAndShowFooter();
+                    // Plot stack (matplotlib + optimized plot) non-blocking; await in explorer when user runs first plot
+                    explorer._plotStackReady = pyodide.loadPackage('matplotlib')
+                        .then(() => explorer.installOptimizedPlotFunction())
+                        .then(() => explorer.detectVersions())
+                        .catch((e) => {
+                            console.warn('Plot stack load failed:', e);
+                        });
+                }).catch((e) => {
+                    console.error("Pyodide/background setup failed:", e);
+                    hideLoaderAndShowFooter();
+                });
 
             } catch (e) {
                 console.error("Bootstrap failed:", e);

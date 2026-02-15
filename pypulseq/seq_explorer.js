@@ -175,6 +175,7 @@ export class SequenceExplorer {
         this.filterSeqPrefix = this.config.onlySeqPrefix;
         this.installedPackages = new Set(); // Track installed packages to avoid reinstalling
         this.defaultInterpreterSeqPath = null; // Preloaded default .seq path for interpreter
+        this._plotStackReady = null; // Promise: matplotlib + installOptimizedPlotFunction (set by bootstrap, non-blocking)
         
         // Initialize UI
         if (containerId) {
@@ -513,8 +514,6 @@ plt.rcParams['font.size'] = 8`;
         try {
             const pyodideVersion = pyodide.version || 'unknown';
             const versions = await pyodide.runPythonAsync(`
-import matplotlib
-import matplotlib.pyplot as plt
 import json
 import sys
 
@@ -528,9 +527,10 @@ except:
     versions['numpy'] = 'unknown'
 
 try:
+    import matplotlib
     versions['matplotlib'] = matplotlib.__version__
 except:
-    versions['matplotlib'] = 'unknown'
+    versions['matplotlib'] = 'loading...'
 
 try:
     import pypulseq
@@ -597,7 +597,28 @@ json.dumps(versions)
         console.log('Loading sequences from', this.config.sources.length, 'sources...');
         this.showStatus('Loading sequences...', 'info');
         this.sequences = {};
-        
+
+        // Install all unique dependencies once before loading (simple batch; version conflicts possible across sources)
+        if (this.config.pyodide) {
+            const allDeps = [];
+            for (const source of this.config.sources) {
+                if (source.dependencies && source.dependencies.length > 0) {
+                    for (const d of source.dependencies) allDeps.push(d);
+                }
+            }
+            const seen = new Set();
+            const uniqueDeps = allDeps.filter((d) => {
+                const pkgName = typeof d === 'string' ? d.split(/[>=<!=]/)[0].trim() : (d.name || d);
+                if (seen.has(pkgName)) return false;
+                seen.add(pkgName);
+                return true;
+            });
+            if (uniqueDeps.length > 0) {
+                this.showStatus('Installing dependencies...', 'info');
+                await this.installDependencies(uniqueDeps);
+            }
+        }
+
         // Load all sources in parallel for better performance
         const loadPromises = this.config.sources.map(async (source) => {
             try {
@@ -793,16 +814,7 @@ result
     
     async loadSource(source) {
         const sourceType = this.resolveSourceType(source);
-        // Install dependencies BEFORE loading the source
-        // This ensures that configured sources can be loaded properly
-        // Dependencies are only installed for sources that are actually in the config
-        if (source.dependencies && source.dependencies.length > 0 && this.config.pyodide) {
-            const sourceLabel = source.name || source.path || 'source';
-            console.log(`Installing dependencies for source "${sourceLabel}":`, source.dependencies);
-            this.showStatus(`Installing dependencies for ${sourceLabel}...`, 'info');
-            await this.installDependencies(source.dependencies);
-        }
-        
+        // Dependencies are installed once in loadSequences() and on demand (missing only) in loadParamsForSequence()
         if (sourceType === 'local_file' || sourceType === 'built-in') {
             await this.loadLocalFile(source);
         } else if (sourceType === 'remote_file') {
@@ -1686,12 +1698,18 @@ json.dumps(functions)
             
             console.log('Loading parameters for:', { fileName, functionName, sourceType: source.type, source, hasDoc: !!doc, docLength: doc?.length });
             
-            // Install dependencies first if specified
+            // Install only missing dependencies (e.g. for sources added after initial load)
             if (source.dependencies && source.dependencies.length > 0) {
-                this.showStatus('Installing dependencies...', 'info');
-                await this.installDependencies(source.dependencies);
+                const missing = source.dependencies.filter((pkg) => {
+                    const pkgName = typeof pkg === 'string' ? pkg.split(/[>=<!=]/)[0].trim() : (pkg.name || pkg);
+                    return !this.installedPackages.has(pkgName);
+                });
+                if (missing.length > 0) {
+                    this.showStatus('Installing dependencies...', 'info');
+                    await this.installDependencies(missing);
+                }
             }
-            
+
             const sourceType = this.resolveSourceType(source);
             const useModulePath = source.fullModulePath || (sourceType === 'pyodide_module' ? (source.module || source.path) : null);
             if (!useModulePath) {
@@ -2183,6 +2201,9 @@ json.dumps(_result)
             console.warn('No function selected or Pyodide not available');
             return;
         }
+        if (this._plotStackReady) {
+            await this._plotStackReady;
+        }
 
         // If a protocolName is provided, save a snapshot first
         if (protocolName) {
@@ -2520,6 +2541,9 @@ json.dumps(out)
         if (!this.selectedSequence || !this.config.pyodide) {
             console.warn('No function selected or Pyodide not available');
             return;
+        }
+        if (this._plotStackReady) {
+            await this._plotStackReady;
         }
 
         const paramsRoot = this.paramsTarget || this.container;
