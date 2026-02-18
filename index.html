@@ -141,22 +141,6 @@
             background: var(--border); 
             overflow: hidden; 
         }
-        /* Footer collapse behaviors: SEQUENCES (tree) and PROTOCOL (params) */
-        #slot-footer.tree-collapsed {
-            grid-template-columns: 30px 0.8fr 1.8fr;
-        }
-        #slot-footer.params-collapsed {
-            grid-template-columns: 1.2fr 0.8fr 30px;
-        }
-        #slot-footer.tree-collapsed.params-collapsed {
-            grid-template-columns: 30px 0.8fr 30px;
-        }
-        /* When any footer column is collapsed, match the footer background to the column background */
-        #slot-footer.tree-collapsed,
-        #slot-footer.params-collapsed {
-            background: var(--bg-elevated);
-        }
-        
         .footer-col { 
             background: var(--bg-elevated); 
             overflow-y: auto; 
@@ -511,7 +495,7 @@
 
                 const mainViewerEl = document.getElementById('nv-viewer-container');
                 if (mainViewerEl) mainViewerEl.classList.add('viewer-waiting-demo');
-                nvModule.loadUrl(nvModule.DEMO_URL, "mni152.nii.gz", true).then(() => {
+                const phantomReady = nvModule.loadUrl(nvModule.DEMO_URL, "mni152.nii.gz", true).then(() => {
                     if (mainViewerEl) mainViewerEl.classList.remove('viewer-waiting-demo');
                 });
 
@@ -527,6 +511,10 @@
                     if (!footer || !dots) return;
                     const tabEls = dots.querySelectorAll('.footer-card-tab[data-card]');
                     if (tabEls.length !== 3) return;
+                    function isCompactLayout() {
+                        return window.matchMedia('(max-width: 768px)').matches ||
+                            document.querySelector('.lab-shell')?.classList.contains('compact-mode');
+                    }
                     const updateActive = () => {
                         const cardWidth = footer.scrollWidth / 3;
                         const idx = Math.round(footer.scrollLeft / cardWidth);
@@ -538,7 +526,7 @@
 
                     tabEls.forEach((el, i) => {
                         el.addEventListener('click', () => {
-                            if (!window.matchMedia('(max-width: 768px)').matches) return;
+                            if (!isCompactLayout()) return;
                             const cardWidth = footer.scrollWidth / 3;
                             footer.scrollTo({ left: i * cardWidth, behavior: 'smooth' });
                         });
@@ -546,11 +534,11 @@
 
                     let dotsStartX = 0;
                     dots.addEventListener('touchstart', (e) => {
-                        if (!window.matchMedia('(max-width: 768px)').matches) return;
+                        if (!isCompactLayout()) return;
                         dotsStartX = e.touches[0].clientX;
                     }, { passive: true });
                     dots.addEventListener('touchend', (e) => {
-                        if (!window.matchMedia('(max-width: 768px)').matches) return;
+                        if (!isCompactLayout()) return;
                         const endX = e.changedTouches[0].clientX;
                         const delta = dotsStartX - endX;
                         const cardWidth = footer.scrollWidth / 3;
@@ -634,6 +622,7 @@
                         explorer.detectVersions(),
                         explorer.loadSourcesFromConfig(configCode)
                     ]);
+                    await phantomReady.catch(() => {});
                     hideLoaderAndShowFooter();
                     // Plot stack (matplotlib + optimized plot) non-blocking; await in explorer when user runs first plot
                     explorer._plotStackReady = pyodide.loadPackage('matplotlib')
@@ -642,8 +631,9 @@
                         .catch((e) => {
                             console.warn('Plot stack load failed:', e);
                         });
-                }).catch((e) => {
+                }).catch(async (e) => {
                     console.error("Pyodide/background setup failed:", e);
+                    await phantomReady.catch(() => {});
                     hideLoaderAndShowFooter();
                 });
 
