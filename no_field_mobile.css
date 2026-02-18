@@ -4,6 +4,12 @@
    ============================================ */
 
 @media (max-width: 768px) {
+    /* Viewer hints are desktop-only (mouse/keyboard) */
+    .viewer-hint,
+    .preview-hint {
+        display: none !important;
+    }
+
     /* Footer 15% taller on mobile (320 → 368px), viewer shrinks accordingly */
     .lab-grid {
         --sidebar-width: 200px;

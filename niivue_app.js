@@ -49,6 +49,7 @@ export class NiivueModule {
     this.containerControls = null;
     this.canvas = null;
     this.statusOverlay = null;
+    this.crosshairIntensityEl = null;
     this.statusText = null;
     this.fileInput = null;
     this.dirInput = null;
@@ -139,6 +140,7 @@ export class NiivueModule {
       <div class="viewer standalone-viewer" style="position: relative;">
         <canvas id="${this.canvasId}"></canvas>
         <div class="status" id="statusOverlay-${this.instanceId}">idle</div>
+        <div class="crosshair-intensity" id="crosshairIntensity-${this.instanceId}">—</div>
         <div class="viewer-hint" style="position: absolute; bottom: 8px; right: 8px; font-size: 11px; color: rgba(255,255,255,0.7); pointer-events: none; text-shadow: 0 1px 2px rgba(0,0,0,0.8);">
           CTRL + mouse to change FoV
         </div>
@@ -147,6 +149,7 @@ export class NiivueModule {
 
     this.canvas = this.containerViewer.querySelector(`#${this.canvasId}`);
     this.statusOverlay = this.containerViewer.querySelector(`#statusOverlay-${this.instanceId}`);
+    this.crosshairIntensityEl = this.containerViewer.querySelector(`#crosshairIntensity-${this.instanceId}`);
     
     // Attach Niivue after small delay to ensure canvas is ready
     setTimeout(() => this.initNiivue(), 10);
@@ -391,8 +394,8 @@ export class NiivueModule {
             <div class="sliderRow">
               <div>Mask Z</div>
               <div class="input-sync">
-                <input id="maskZVal-${this.instanceId}" type="number" class="num-input" step="1" />
-                <input id="maskZ-${this.instanceId}" type="range" min="1" max="512" step="1" value="1" />
+                <input id="maskZVal-${this.instanceId}" type="number" class="num-input" step="1" value="128" />
+                <input id="maskZ-${this.instanceId}" type="range" min="1" max="512" step="1" value="128" />
               </div>
             </div>
           </div>
@@ -589,6 +592,9 @@ export class NiivueModule {
         if ((Array.isArray(mm) || ArrayBuffer.isView(mm)) && mm.length >= 3) {
           this.lastLocationMm = [Number(mm[0]), Number(mm[1]), Number(mm[2])];
         }
+
+        // Update crosshair intensity (bottom-left overlay)
+        this.updateCrosshairIntensity(vox);
       } catch (e) { console.warn("onLocationChange handler failed", e); }
     };
 
@@ -1079,6 +1085,37 @@ def run_resampling(source_bytes, reference_bytes):
     if (this.statusOverlay) this.statusOverlay.textContent = s;
   }
 
+  /** Get voxel intensity at voxel indices [i, j, k]. Returns null if no volume or out of bounds. */
+  getIntensityAtVox(vol, vox, dim3) {
+    if (!vol || !dim3 || dim3.length < 3) return null;
+    const nx = dim3[0], ny = dim3[1], nz = dim3[2];
+    const ix = Math.round(Number(vox[0]));
+    const iy = Math.round(Number(vox[1]));
+    const iz = Math.round(Number(vox[2]));
+    if (ix < 0 || ix >= nx || iy < 0 || iy >= ny || iz < 0 || iz >= nz) return null;
+    const frame = vol.frame4D ?? 0;
+    return Number(vol.getValue(ix, iy, iz, frame));
+  }
+
+  updateCrosshairIntensity(vox) {
+    if (!this.crosshairIntensityEl) return;
+    try {
+      if (!(Array.isArray(vox) || ArrayBuffer.isView(vox)) || vox.length < 3) {
+        this.crosshairIntensityEl.textContent = "—";
+        return;
+      }
+      const { vol, dim3 } = this.getVolumeForIntensity();
+      const val = this.getIntensityAtVox(vol, vox, dim3);
+      if (val === null || Number.isNaN(val)) {
+        this.crosshairIntensityEl.textContent = "—";
+        return;
+      }
+      this.crosshairIntensityEl.textContent = Number.isInteger(val) ? String(val) : val.toFixed(2);
+    } catch (e) {
+      this.crosshairIntensityEl.textContent = "—";
+    }
+  }
+
   readAnglesBestEffort() {
     const candidates = [
       [this.nv?.opts?.renderAzimuth, this.nv?.opts?.renderElevation],
@@ -1417,6 +1454,27 @@ def run_resampling(source_bytes, reference_bytes):
     }
     const affine = hdr?.affine ?? vol?.affine ?? vol?.matRAS ?? vol?.mat?.affine ?? null;
     return { vol, hdr, dim3, affine };
+  }
+
+  /** Volume and dim3 to use for crosshair intensity: selected volume, or first visible, or [0]. */
+  getVolumeForIntensity() {
+    const list = this.nv?.volumes;
+    if (!list?.length) return { vol: null, dim3: null };
+    let vol = null;
+    if (this.selectedVolume && list.includes(this.selectedVolume)) {
+      vol = this.selectedVolume;
+    } else {
+      const visible = list.find((v) => v.opacity > 0);
+      vol = visible ?? list[0];
+    }
+    const hdr = vol?.hdr ?? vol?.header ?? null;
+    const dimRaw = hdr?.dims ?? hdr?.dim ?? vol?.dims ?? vol?.dim ?? null;
+    let dim3 = null;
+    if (Array.isArray(dimRaw)) {
+      if (dimRaw.length >= 4) dim3 = [dimRaw[1], dimRaw[2], dimRaw[3]];
+      else if (dimRaw.length === 3) dim3 = [dimRaw[0], dimRaw[1], dimRaw[2]];
+    }
+    return { vol, dim3 };
   }
 
   estimateVoxelSpacingMm({ vol, hdr, dim3, affine }) {
