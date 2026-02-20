@@ -1858,6 +1858,77 @@ os.makedirs('/phantom/averaged', exist_ok=True)
     return (x, y, z) => [x, y, z];
   }
 
+  worldToVoxelFactory(affine) {
+    if (!affine || affine.length < 16) return (x, y, z) => [x, y, z];
+    const m = affine;
+    const tCol = Math.hypot(m[12] ?? 0, m[13] ?? 0, m[14] ?? 0);
+    const tRow = Math.hypot(m[3] ?? 0, m[7] ?? 0, m[11] ?? 0);
+    if (tCol > tRow * 2) {
+      const r00 = m[0], r10 = m[1], r20 = m[2], r01 = m[4], r11 = m[5], r21 = m[6], r02 = m[8], r12 = m[9], r22 = m[10];
+      const tx = m[12], ty = m[13], tz = m[14];
+      const det = r00 * (r11 * r22 - r21 * r12) - r01 * (r10 * r22 - r20 * r12) + r02 * (r10 * r21 - r20 * r11);
+      if (Math.abs(det) < 1e-12) return (x, y, z) => [x, y, z];
+      const inv = 1 / det;
+      const i00 = (r11 * r22 - r21 * r12) * inv, i10 = (r21 * r02 - r01 * r22) * inv, i20 = (r01 * r12 - r11 * r02) * inv;
+      const i01 = (r20 * r12 - r10 * r22) * inv, i11 = (r00 * r22 - r20 * r02) * inv, i21 = (r10 * r02 - r00 * r12) * inv;
+      const i02 = (r10 * r21 - r20 * r11) * inv, i12 = (r20 * r01 - r00 * r21) * inv, i22 = (r00 * r11 - r10 * r01) * inv;
+      const ox = -(i00 * tx + i01 * ty + i02 * tz), oy = -(i10 * tx + i11 * ty + i12 * tz), oz = -(i20 * tx + i21 * ty + i22 * tz);
+      return (x, y, z) => [i00 * x + i01 * y + i02 * z + ox, i10 * x + i11 * y + i12 * z + oy, i20 * x + i21 * y + i22 * z + oz];
+    }
+    const r00 = m[0], r01 = m[1], r02 = m[2], r10 = m[4], r11 = m[5], r12 = m[6], r20 = m[8], r21 = m[9], r22 = m[10];
+    const tx = m[3], ty = m[7], tz = m[11];
+    const det = r00 * (r11 * r22 - r21 * r12) - r01 * (r10 * r22 - r20 * r12) + r02 * (r10 * r21 - r20 * r11);
+    if (Math.abs(det) < 1e-12) return (x, y, z) => [x, y, z];
+    const inv = 1 / det;
+    const i00 = (r11 * r22 - r21 * r12) * inv, i01 = (r21 * r02 - r01 * r22) * inv, i02 = (r01 * r12 - r11 * r02) * inv;
+    const i10 = (r20 * r12 - r10 * r22) * inv, i11 = (r00 * r22 - r20 * r02) * inv, i12 = (r10 * r02 - r00 * r12) * inv;
+    const i20 = (r10 * r21 - r20 * r11) * inv, i21 = (r20 * r01 - r00 * r21) * inv, i22 = (r00 * r11 - r10 * r01) * inv;
+    const ox = -(i00 * tx + i10 * ty + i20 * tz), oy = -(i01 * tx + i11 * ty + i21 * tz), oz = -(i02 * tx + i12 * ty + i22 * tz);
+    return (x, y, z) => [i00 * x + i10 * y + i20 * z + ox, i01 * x + i11 * y + i21 * z + oy, i02 * x + i12 * y + i22 * z + oz];
+  }
+
+  nii2fovbox(affine, dims) {
+    if (!affine || !dims || dims.length < 3) return [];
+    const [nx, ny, nz] = [Number(dims[0]), Number(dims[1]), Number(dims[2])];
+    const vox2world = this.voxelToWorldFactory(affine);
+    const corners = [
+      [0, 0, 0], [nx - 1, 0, 0], [0, ny - 1, 0], [0, 0, nz - 1],
+      [nx - 1, ny - 1, 0], [nx - 1, 0, nz - 1], [0, ny - 1, nz - 1], [nx - 1, ny - 1, nz - 1]
+    ];
+    return corners.map(([x, y, z]) => vox2world(x, y, z));
+  }
+
+  affineToFovParams(scanAffine, scanDims, refAffine, refDims, refSpacing) {
+    if (!scanAffine || !scanDims || scanDims.length < 3 || !refAffine || !refDims || refDims.length < 3) return null;
+    const [dx, dy, dz] = [Number(refDims[0]), Number(refDims[1]), Number(refDims[2])];
+    const refCenter = [(dx - 1) / 2, (dy - 1) / 2, (dz - 1) / 2];
+    const spacing = refSpacing && refSpacing.length >= 3 ? refSpacing : [1, 1, 1];
+    const worldPts = this.nii2fovbox(scanAffine, scanDims);
+    if (worldPts.length !== 8) return null;
+    const world2vox = this.worldToVoxelFactory(refAffine);
+    const voxPts = worldPts.map(p => world2vox(p[0], p[1], p[2]));
+    const center = [0, 0, 0];
+    for (const p of voxPts) { center[0] += p[0]; center[1] += p[1]; center[2] += p[2]; }
+    center[0] /= 8; center[1] /= 8; center[2] /= 8;
+    const e01 = [voxPts[1][0] - voxPts[0][0], voxPts[1][1] - voxPts[0][1], voxPts[1][2] - voxPts[0][2]];
+    const e02 = [voxPts[2][0] - voxPts[0][0], voxPts[2][1] - voxPts[0][1], voxPts[2][2] - voxPts[0][2]];
+    const e03 = [voxPts[3][0] - voxPts[0][0], voxPts[3][1] - voxPts[0][1], voxPts[3][2] - voxPts[0][2]];
+    const len = (v) => Math.hypot(v[0], v[1], v[2]);
+    const sizeVox = [len(e01), len(e02), len(e03)];
+    const sizeMm = [sizeVox[0] * spacing[0], sizeVox[1] * spacing[1], sizeVox[2] * spacing[2]];
+    const offsetVox = [center[0] - refCenter[0], center[1] - refCenter[1], center[2] - refCenter[2]];
+    const offsetMm = [offsetVox[0] * spacing[0], offsetVox[1] * spacing[1], offsetVox[2] * spacing[2]];
+    const ax = (v) => { const l = len(v); return l > 1e-6 ? [v[0] / l, v[1] / l, v[2] / l] : [1, 0, 0]; };
+    const r0 = ax(e01), r1 = ax(e02), r2 = ax(e03);
+    const R = [r0[0], r1[0], r2[0], r0[1], r1[1], r2[1], r0[2], r1[2], r2[2]];
+    const sy = -R[2];
+    const cy = Math.sqrt(1 - sy * sy) || 1e-6;
+    const rotX = Math.atan2(R[5] / cy, R[8] / cy) * (180 / Math.PI);
+    const rotY = Math.asin(Math.max(-1, Math.min(1, sy))) * (180 / Math.PI);
+    const rotZ = Math.atan2(R[3] / cy, R[0] / cy) * (180 / Math.PI);
+    return { sizeMm, offsetMm, rotationDeg: [-rotX, -rotY, rotZ] };
+  }
+
   getVolumeInfo() {
     const vol = this.nv.volumes?.[0];
     const hdr = vol?.hdr ?? vol?.header ?? null;
@@ -2429,6 +2500,32 @@ os.makedirs('/phantom/averaged', exist_ok=True)
           this.selectedVolume = this.selectedVolume === vol ? null : vol;
           this.updateVolumeList();
           this.updatePreviewFromSelection();
+          if (this.selectedVolume === vol) {
+            const ref = this.getVolumeInfo();
+            if (ref?.vol && ref?.dim3 && ref?.affine) {
+              const scanHdr = vol?.hdr ?? vol?.header ?? null;
+              const scanAffine = scanHdr?.affine ?? vol?.affine ?? vol?.matRAS ?? null;
+              const scanDimRaw = scanHdr?.dims ?? scanHdr?.dim ?? vol?.dims ?? vol?.dim ?? null;
+              let scanDims = null;
+              if (Array.isArray(scanDimRaw)) {
+                if (scanDimRaw.length >= 4) scanDims = [scanDimRaw[1], scanDimRaw[2], scanDimRaw[3]];
+                else if (scanDimRaw.length === 3) scanDims = scanDimRaw;
+              }
+              if (scanAffine && scanDims) {
+                const flat = (a) => Array.isArray(a) && a.length < 16 && Array.isArray(a[0])
+                  ? [a[0][0],a[0][1],a[0][2],a[0][3], a[1][0],a[1][1],a[1][2],a[1][3], a[2][0],a[2][1],a[2][2],a[2][3], a[3][0],a[3][1],a[3][2],a[3][3]]
+                  : a;
+                const params = this.affineToFovParams(flat(scanAffine), scanDims, ref.affine, ref.dim3, this.voxelSpacingMm);
+                if (params && this.fovX && this.fovOffX && this.fovRotX) {
+                  this.fovX.value = String(Math.round(params.sizeMm[0])); this.fovY.value = String(Math.round(params.sizeMm[1])); this.fovZ.value = String(Math.round(params.sizeMm[2]));
+                  this.fovOffX.value = String(Number(params.offsetMm[0]).toFixed(1)); this.fovOffY.value = String(Number(params.offsetMm[1]).toFixed(1)); this.fovOffZ.value = String(Number(params.offsetMm[2]).toFixed(1));
+                  this.fovRotX.value = String(Math.round(params.rotationDeg[0])); this.fovRotY.value = String(Math.round(params.rotationDeg[1])); this.fovRotZ.value = String(Math.round(params.rotationDeg[2]));
+                  if (this.showFov) this.showFov.checked = true;
+                  this.rebuildFovLive(true);
+                }
+              }
+            }
+          }
         };
       }
       return row;
