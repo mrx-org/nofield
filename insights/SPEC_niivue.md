@@ -23,3 +23,10 @@ Modular medical imaging component for 3D/orthographic NIfTI visualization and in
   - `loadUrl(url, name, isAdding)`: Robust additive or destructive volume loading with initialization queuing.
   - `triggerHighlight()`: Triggers the green visual feedback animation.
   - `updateVolumeList()`: Rebuilds the synchronized management UI.
+
+## Phantom JSON Execution (viewer)
+- **JSON tab** (only when using `viewer.html`): Lists JSON phantom config filenames from the current session; selecting one shows its content in a CodeMirror editor. Buttons: **Save** / **Save As** / **Revert** (in VFS), **Execute** (runs phantom and loads result into the viewer).
+- **Add Folder**: User selects a folder; all NIfTIs and JSONs are uploaded to Pyodide’s VFS under `/phantom`. No raw NIfTIs are loaded into Niivue; the user picks one JSON (from a dialog or the JSON tab), then **Execute** runs.
+- **Execute**: Calls the same logic as the standalone `data/execute_json.py` inside Pyodide: `write_executed=False`, `write_averaged=True`, output to `/phantom/averaged`. Produces 3D density-weighted averaged maps (density, T1, T2, T2′, ADC, dB0, B1+, B1−) with NaN where total density ≤ threshold (default 0.01). Resulting NIfTIs are read from VFS and loaded into Niivue as one volume group (label `*_averaged`).
+- **Single source of truth**: Phantom execution logic lives in `data/execute_json.py`; the viewer fetches and runs that script in Pyodide, so CLI and browser stay in sync.
+

@@ -12,6 +12,7 @@ export class NiivueModule {
       multiplanarLayout: 2 // MULTIPLANAR_TYPE.GRID
     });
     this.pyodide = options.pyodide || null;
+    this._initPyodidePromise = null;
     
     // State properties
     this.fovMeshData = null;
@@ -102,6 +103,8 @@ export class NiivueModule {
     this.FOV_RGBA255 = new Uint8Array([255, 220, 0, 255]);
     this.isInitialized = false;
     this.volumeGroups = [];
+    this.jsonEditorCm = null;
+    this.jsonTabCurrentName = null;
     this.collapsedGroups = new Set();
     this._initWaiters = [];
     this.selectedVolume = null; // Track which volume is selected for preview
@@ -175,12 +178,14 @@ export class NiivueModule {
         </div>
       `;
     } else {
+      const showJsonTab = this.options.showJsonTab === true;
       this.containerControls.innerHTML = `
         <div class="tabbed-controls">
           <div class="tabs-header">
             <button class="tab-btn active" data-tab="source">VIEWER</button>
             <button class="tab-btn" data-tab="view">OPTIONS</button>
             <button class="tab-btn" data-tab="fov">FOV</button>
+            ${showJsonTab ? '<button class="tab-btn" data-tab="json">JSON</button>' : ''}
           </div>
           <div class="tabs-content">
             <div class="tab-pane active" id="tab-source-${this.instanceId}">${this._getPanelSourceHtml()}</div>
@@ -193,6 +198,7 @@ export class NiivueModule {
                     </div>
                 </div>
             </div>
+            ${showJsonTab ? `<div class="tab-pane" id="tab-json-${this.instanceId}">${this._getPanelJsonHtml()}</div>` : ''}
           </div>
         </div>
       `;
@@ -239,12 +245,14 @@ export class NiivueModule {
           btn.classList.add('active');
           const tab = btn.dataset.tab;
           this.containerControls.querySelector(`#tab-${tab}-${this.instanceId}`).classList.add('active');
+          if (tab === 'json' && this.jsonEditorCm) this.jsonEditorCm.refresh();
         };
       });
     }
 
     this.bindControlElements();
     this.setupEventListeners();
+    if (this.options.showJsonTab) this.initJsonEditor();
     // Do not auto-initialize Pyodide here; let the bootstrap process handle it
     // or call it manually if needed.
   }
@@ -300,6 +308,265 @@ export class NiivueModule {
           </div>
         </div>
     `;
+  }
+
+  _getPanelJsonHtml() {
+    return `
+        <div class="panel-flat json-tab-panel" style="display: flex; flex-direction: column; height: 100%; overflow: hidden;">
+          <h3 class="panel-title">JSON config</h3>
+          <div id="json-tab-list-${this.instanceId}" class="json-tab-list" style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; max-height: 120px; overflow-y: auto; flex-shrink: 0;">
+            <!-- Filled by updateJsonTab() -->
+          </div>
+          <div id="json-editor-wrap-${this.instanceId}" class="json-editor-wrap" style="flex: 1; min-height: 120px; display: flex; flex-direction: column; overflow: hidden;">
+            <textarea id="json-editor-${this.instanceId}" class="json-editor" placeholder="Add a folder with JSON + NIfTIs to see configs." style="flex: 1; min-height: 0; font-size: 11px;"></textarea>
+          </div>
+          <div class="row json-tab-actions" style="flex-shrink: 0; gap: 6px; margin-top: 8px; display: flex; flex-wrap: wrap; align-items: center;">
+            <button type="button" id="json-execute-${this.instanceId}" class="btn btn-primary btn-sm" title="Execute JSON phantom config">Execute</button>
+            <button type="button" id="json-save-${this.instanceId}" class="btn btn-secondary btn-sm" title="Save (update in VFS)">Save</button>
+            <button type="button" id="json-save-as-${this.instanceId}" class="btn btn-secondary btn-sm" title="Save as new config in VFS">Save As</button>
+            <button type="button" id="json-revert-${this.instanceId}" class="btn btn-secondary btn-sm" title="Reload current file (discard unsaved edits)">Revert</button>
+            <span id="json-tab-status-${this.instanceId}" class="json-tab-status"></span>
+          </div>
+        </div>
+    `;
+  }
+
+  initJsonEditor() {
+    const root = this.containerControls || document;
+    const textarea = root.querySelector(`#json-editor-${this.instanceId}`);
+    const wrap = root.querySelector(`#json-editor-wrap-${this.instanceId}`);
+    const saveBtn = root.querySelector(`#json-save-${this.instanceId}`);
+    const saveAsBtn = root.querySelector(`#json-save-as-${this.instanceId}`);
+    const revertBtn = root.querySelector(`#json-revert-${this.instanceId}`);
+    if (!textarea || !wrap) return;
+    if (window.CodeMirror) {
+      this.jsonEditorCm = window.CodeMirror.fromTextArea(textarea, {
+        mode: 'application/json',
+        theme: 'monokai',
+        lineNumbers: false,
+        lineWrapping: true,
+        readOnly: false,
+        indentUnit: 2,
+      });
+      this.jsonEditorCm.setSize('100%', '100%');
+      wrap.querySelector('.CodeMirror')?.style?.setProperty('min-height', '120px');
+    }
+    const execBtn = root.querySelector(`#json-execute-${this.instanceId}`);
+    if (execBtn) execBtn.addEventListener('click', () => this.handleJsonExecute());
+    if (saveBtn) saveBtn.addEventListener('click', () => this.handleJsonSave());
+    if (saveAsBtn) saveAsBtn.addEventListener('click', () => this.handleJsonSaveAs());
+    if (revertBtn) revertBtn.addEventListener('click', () => this.handleJsonRevert());
+  }
+
+  getJsonEditorValue() {
+    if (this.jsonEditorCm) return this.jsonEditorCm.getValue();
+    const root = this.containerControls || document;
+    const el = root.querySelector(`#json-editor-${this.instanceId}`);
+    return el ? el.value : '';
+  }
+
+  setJsonEditorValue(value) {
+    const str = value != null ? String(value) : '';
+    if (this.jsonEditorCm) {
+      this.jsonEditorCm.setValue(str);
+      this.jsonEditorCm.clearHistory();
+    } else {
+      const root = this.containerControls || document;
+      const el = root.querySelector(`#json-editor-${this.instanceId}`);
+      if (el) el.value = str;
+    }
+  }
+
+  setJsonTabStatus(msg) {
+    const root = this.containerControls || document;
+    const el = root.querySelector(`#json-tab-status-${this.instanceId}`);
+    if (el) el.textContent = msg || '';
+  }
+
+  handleJsonSave() {
+    const raw = this.getJsonEditorValue();
+    if (!raw.trim()) {
+      this.setJsonTabStatus('Editor is empty.');
+      return;
+    }
+    try {
+      JSON.parse(raw);
+    } catch (e) {
+      this.setJsonTabStatus('Could not be saved, fix JSON.');
+      return;
+    }
+    const name = this.jsonTabCurrentName;
+    if (!name) {
+      this.setJsonTabStatus('No config selected. Click a filename in the list first.');
+      return;
+    }
+    if (!this.pyodide) {
+      this.setJsonTabStatus('Pyodide not ready.');
+      return;
+    }
+    try {
+      this.pyodide.FS.writeFile(`/phantom/${name}`, raw);
+      this.setJsonTabStatus('Saved.');
+    } catch (e) {
+      this.setJsonTabStatus(`Save failed: ${e.message}`);
+    }
+  }
+
+  handleJsonSaveAs() {
+    const raw = this.getJsonEditorValue();
+    if (!raw.trim()) {
+      this.setJsonTabStatus('Editor is empty.');
+      return;
+    }
+    try {
+      JSON.parse(raw);
+    } catch (e) {
+      this.setJsonTabStatus('Could not be saved, fix JSON.');
+      return;
+    }
+    if (!this.pyodide) {
+      this.setJsonTabStatus('Pyodide not ready.');
+      return;
+    }
+    const base = (this.jsonTabCurrentName || 'config').replace(/\.json$/i, '');
+    const suggested = `${base}_copy.json`;
+    this._showSaveAsPrompt(suggested, (fileName) => {
+      if (!fileName) return;
+      try {
+        this.pyodide.FS.writeFile(`/phantom/${fileName}`, raw);
+        if (this.options.showJsonTab) this.updateJsonTab();
+        this.setJsonTabStatus(`Saved as ${fileName}.`);
+      } catch (e) {
+        this.setJsonTabStatus(`Save failed: ${e.message}`);
+      }
+    });
+  }
+
+  _showSaveAsPrompt(suggested, onConfirm) {
+    const overlay = document.createElement('div');
+    overlay.className = 'json-saveas-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:10000;';
+    const box = document.createElement('div');
+    box.className = 'json-saveas-dialog';
+    box.style.cssText = 'background:var(--bg-panel);border:1px solid var(--border);border-radius:8px;padding:16px;min-width:280px;box-shadow:0 8px 32px rgba(0,0,0,0.4);';
+    const label = document.createElement('label');
+    label.style.cssText = 'display:block;font-size:12px;color:var(--muted);margin-bottom:6px;';
+    label.textContent = 'Save as (filename in list):';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = suggested;
+    input.style.cssText = 'width:100%;box-sizing:border-box;padding:8px;margin-bottom:12px;background:rgba(255,255,255,0.06);border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:13px;';
+    input.placeholder = 'e.g. phantom_copy.json';
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'btn btn-secondary';
+    cancel.textContent = 'Cancel';
+    const ok = document.createElement('button');
+    ok.type = 'button';
+    ok.className = 'btn primary';
+    ok.textContent = 'OK';
+    const finish = (value) => {
+      overlay.remove();
+      onConfirm(value);
+    };
+    cancel.onclick = () => finish(null);
+    ok.onclick = () => {
+      const name = input.value.trim();
+      if (!name) return;
+      const fileName = name.endsWith('.json') ? name : `${name}.json`;
+      finish(fileName);
+    };
+    input.onkeydown = (e) => {
+      if (e.key === 'Enter') ok.click();
+      if (e.key === 'Escape') cancel.click();
+    };
+    btnRow.appendChild(cancel);
+    btnRow.appendChild(ok);
+    box.appendChild(label);
+    box.appendChild(input);
+    box.appendChild(btnRow);
+    overlay.appendChild(box);
+    overlay.onclick = (e) => { if (e.target === overlay) finish(null); };
+    document.body.appendChild(overlay);
+    input.focus();
+    input.select();
+  }
+
+  handleJsonRevert() {
+    const name = this.jsonTabCurrentName;
+    if (!name) {
+      this.setJsonTabStatus('No file selected.');
+      return;
+    }
+    if (!this.pyodide) {
+      this.setJsonTabStatus('Pyodide not ready.');
+      return;
+    }
+    try {
+      const content = this.pyodide.FS.readFile(`/phantom/${name}`, { encoding: 'utf8' });
+      this.setJsonEditorValue(content);
+      this.setJsonTabStatus('Reverted to saved version.');
+    } catch (e) {
+      this.setJsonTabStatus(`Revert failed: ${e.message}`);
+    }
+  }
+
+  async handleJsonExecute(jsonName) {
+    const name = jsonName ?? this.jsonTabCurrentName;
+    if (!name) { this.setJsonTabStatus('No JSON selected.'); return; }
+    if (!this.pyodide) { this.setJsonTabStatus('Pyodide not ready.'); return; }
+    // Sync current editor content to VFS before running
+    const editorContent = this.getJsonEditorValue();
+    if (editorContent.trim()) {
+      try { this.pyodide.FS.writeFile(`/phantom/${name}`, editorContent); } catch (_) {}
+    }
+    this.setJsonTabStatus('Executing...');
+    this.setStatus(`Executing phantom: ${name}`);
+    try {
+      const baseName = name.replace(/\.json$/i, '');
+      // Remove any previous executed/averaged group for this json
+      const prevGroups = this.volumeGroups.filter(g => g.jsonFileName === name && (g.jsonName?.endsWith("_executed") || g.jsonName?.endsWith("_averaged")));
+      for (const g of prevGroups) {
+        g.volumes.forEach(v => { try { this.nv.removeVolume(v); } catch (_) {} });
+      }
+      this.volumeGroups = this.volumeGroups.filter(g => !(g.jsonFileName === name && (g.jsonName?.endsWith("_executed") || g.jsonName?.endsWith("_averaged"))));
+
+      // Averaged-only: 3D density-weighted maps to /phantom/averaged (no 4D executed)
+      const result = await this.pyodide.runPythonAsync(
+        `execute_phantom(${JSON.stringify(name)}, phantom_dir='/phantom', out_dir=None, averaged_dir='/phantom/averaged', write_executed=False, write_averaged=True, density_nan_threshold=0.01)`
+      );
+      const outPaths = result.toJs ? result.toJs() : Array.from(result);
+
+      const groupId = "g-exec-" + Math.random().toString(36).substr(2, 5);
+      const groupVolumes = [];
+      let i = 0;
+      for (const path of outPaths) {
+        const bytes = this.pyodide.FS.readFile(path);
+        const url = URL.createObjectURL(new Blob([bytes]));
+        const volName = path.split('/').pop();
+        const added = await this.nv.addVolumesFromUrl([{
+          url, name: volName, colormap: 'gray', opacity: i === 0 ? 1.0 : 0
+        }]);
+        if (added?.length) { added[0]._groupId = groupId; groupVolumes.push(added[0]); }
+        setTimeout(() => URL.revokeObjectURL(url), 30000);
+        i++;
+      }
+      this.volumeGroups.push({
+        id: groupId,
+        jsonName: baseName + "_averaged",
+        volumes: groupVolumes,
+        jsonFileName: name
+      });
+      this.updateVolumeList();
+      this.setStatus(`Averaged: ${name} (${groupVolumes.length} maps)`);
+      this.setJsonTabStatus(`Done — ${groupVolumes.length} maps loaded.`);
+    } catch (e) {
+      console.error(e);
+      this.setStatus(`Execute error: ${e.message}`);
+      this.setJsonTabStatus(`Error: ${e.message}`);
+    }
   }
 
   _getPanelFovHtml(noContainer = false) {
@@ -781,6 +1048,8 @@ export class NiivueModule {
   }
 
   async initPyodide() {
+    if (this._initPyodidePromise) return this._initPyodidePromise;
+    this._initPyodidePromise = (async () => {
     try {
       if (!this.pyodide) {
         if (typeof loadPyodide === 'undefined') {
@@ -878,6 +1147,15 @@ def run_resampling(source_bytes, reference_bytes):
     resampled_img.to_file_map({'header': nib.FileHolder(fileobj=out_fh), 'image': nib.FileHolder(fileobj=out_fh)})
     return out_fh.getvalue()
       `);
+
+      // Load execute_phantom from standalone script (single source of truth)
+      const executeJsonUrl = this.options.executeJsonScriptUrl || "data/execute_json.py";
+      const execResp = await fetch(executeJsonUrl);
+      if (!execResp.ok) {
+        throw new Error(`Could not load ${executeJsonUrl}: ${execResp.status}`);
+      }
+      const executeJsonCode = await execResp.text();
+      await this.pyodide.runPythonAsync(executeJsonCode);
       
       if (this.pyodideStatus) this.pyodideStatus.textContent = "Python (Pyodide): ready";
       if (this.resampleToFovBtn) {
@@ -885,8 +1163,29 @@ def run_resampling(source_bytes, reference_bytes):
         this.resampleToFovBtn.title = "Resample current volume to match FOV grid";
       }
     } catch (e) {
+      this._initPyodidePromise = null; // allow retry on failure
       console.error(e);
       if (this.pyodideStatus) this.pyodideStatus.textContent = "Python (Pyodide): error " + e.message;
+    }
+    })();
+    return this._initPyodidePromise;
+  }
+
+  async populatePyodideVFS(niftiFiles, jsonFiles) {
+    await this.initPyodide();
+    this.pyodide.runPython(`
+import os, shutil
+if os.path.exists('/phantom'): shutil.rmtree('/phantom')
+os.makedirs('/phantom')
+os.makedirs('/phantom/averaged', exist_ok=True)
+`);
+    for (const f of niftiFiles) {
+      const bytes = new Uint8Array(await f.arrayBuffer());
+      this.pyodide.FS.writeFile(`/phantom/${f.name}`, bytes);
+    }
+    for (const f of jsonFiles) {
+      const text = await f.text();
+      this.pyodide.FS.writeFile(`/phantom/${f.name}`, text);
     }
   }
 
@@ -920,12 +1219,16 @@ def run_resampling(source_bytes, reference_bytes):
           this.setStatus("No .nii or .nii.gz files found in the folder.");
           return;
         }
-        let chosen = jsonFiles[0];
+        this.setStatus("Uploading files to Pyodide VFS...");
+        await this.populatePyodideVFS(niftiFiles, jsonFiles);
+        if (this.options.showJsonTab) this.updateJsonTab();
+        let chosenName = jsonFiles[0].name;
         if (jsonFiles.length > 1) {
-          chosen = await this.showJsonChoiceDialog(jsonFiles, niftiFiles);
+          const chosen = await this.showJsonChoiceDialog(jsonFiles, niftiFiles);
           if (!chosen) return;
+          chosenName = chosen.name;
         }
-        await this.loadMultiPhantomFromFiles(chosen, niftiFiles);
+        await this.handleJsonExecute(chosenName);
       };
     }
 
@@ -975,7 +1278,10 @@ def run_resampling(source_bytes, reference_bytes):
 
     this.downloadFovMeshBtn.addEventListener("click", () => this.handleDownloadFovMesh());
     this.resampleToFovBtn.addEventListener("click", () => this.handleResampleToFov());
-    this.btnDemo.onclick = () => this.loadUrl(this.DEMO_URL, "mni152.nii.gz", true);
+    this.btnDemo.onclick = () => {
+      this.loadUrl(this.DEMO_URL, "mni152.nii.gz", true);
+      if (this.options.showJsonTab) this.updateJsonTab();
+    };
     this.fileInput.onchange = async (e) => {
       const files = Array.from(e.target.files || []);
       e.target.value = "";
@@ -984,6 +1290,7 @@ def run_resampling(source_bytes, reference_bytes):
       const niftiFiles = files.filter(f => /\.nii(\.gz)?$/i.test(f.name));
       if (jsonFile && niftiFiles.length > 0) {
         await this.loadMultiPhantomFromFiles(jsonFile, niftiFiles);
+        if (this.options.showJsonTab) this.updateJsonTab();
       } else if (jsonFile && niftiFiles.length === 0) {
         this.setStatus("Use Add Folder to select a directory with JSON + NIfTIs, or select both together.");
       } else if (files.length === 1) {
@@ -2022,6 +2329,54 @@ def run_resampling(source_bytes, reference_bytes):
     if (scans.length > 0) {
       this.volumeListContainer.appendChild(createHeader("Scans"));
       [...scans].reverse().forEach(s => this.volumeListContainer.appendChild(createRow(s.vol, s.index)));
+    }
+
+    if (this.options.showJsonTab) this.updateJsonTab();
+  }
+
+  updateJsonTab() {
+    if (!this.options.showJsonTab) return;
+    const root = this.containerControls || document;
+    const listEl = root.querySelector(`#json-tab-list-${this.instanceId}`);
+    if (!listEl) return;
+    listEl.innerHTML = "";
+    if (!this.pyodide) {
+      this.jsonTabCurrentName = null;
+      this.setJsonEditorValue("");
+      return;
+    }
+    let jsonNames = [];
+    try {
+      jsonNames = this.pyodide.FS.readdir('/phantom').filter(f => f.endsWith('.json'));
+    } catch (_) {}
+    jsonNames.forEach(name => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn json-tab-list-btn";
+      btn.style.cssText = "text-align:left; padding:8px 10px; justify-content:flex-start;";
+      btn.textContent = name;
+      btn.onclick = () => {
+        listEl.querySelectorAll(".json-tab-list-btn.active").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        this.jsonTabCurrentName = name;
+        try {
+          const content = this.pyodide.FS.readFile(`/phantom/${name}`, { encoding: 'utf8' });
+          this.setJsonEditorValue(content);
+        } catch (_) {
+          this.setJsonEditorValue("");
+        }
+      };
+      listEl.appendChild(btn);
+    });
+    if (jsonNames.length > 0) {
+      const prevIdx = this.jsonTabCurrentName
+        ? jsonNames.indexOf(this.jsonTabCurrentName)
+        : -1;
+      const toSelect = prevIdx >= 0 ? prevIdx : 0;
+      listEl.querySelectorAll(".json-tab-list-btn")[toSelect]?.click();
+    } else {
+      this.jsonTabCurrentName = null;
+      this.setJsonEditorValue("");
     }
   }
 

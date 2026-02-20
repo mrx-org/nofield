@@ -49,7 +49,7 @@
   padding: 0;
 }
 .niivue-app .layout.standalone-layout .standalone-sidebar {
-  width: 338px;
+  width: 40%;
   min-width: 260px;
   flex-shrink: 0;
   display: flex;
@@ -246,6 +246,34 @@
   background: var(--accent);
   border-color: var(--accent);
   color: white;
+}
+
+/* JSON tab (viewer.html only when showJsonTab) */
+.niivue-app .json-tab-panel .json-tab-list-btn {
+  font-size: 11px;
+}
+.niivue-app .json-tab-panel .json-tab-list-btn.active {
+  background: rgba(59, 130, 246, 0.25);
+  border-color: var(--accent);
+  color: var(--text);
+}
+.niivue-app .json-tab-panel .json-tab-status {
+  font-size: 11px;
+  color: var(--muted);
+  margin-left: 6px;
+}
+.niivue-app .json-tab-panel .json-editor {
+  border-radius: 4px;
+}
+.niivue-app .json-tab-panel .json-editor-wrap .CodeMirror,
+.niivue-app .json-tab-panel .json-editor-wrap .CodeMirror pre {
+  font-size: 10px;
+}
+.niivue-app .json-tab-panel .json-editor-wrap .CodeMirror {
+  height: 100%;
+  min-height: 120px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
 }
 
 .niivue-app .viewer {
