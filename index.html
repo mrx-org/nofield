@@ -290,6 +290,10 @@
         import { ScanModule } from './scan_zero/scan_module.js';
         import { eventHub } from './event_hub.js';
 
+        // URL flag: ?pro=1 enables pro/debug behavior. Modules (seq_explorer, niivue_app, scan_module) can check window.pro
+        const urlParams = new URLSearchParams(window.location.search);
+        window.pro = /^1|true|yes$/i.test(urlParams.get('pro') || '');
+
         class ViewManager {
             constructor(nvModule, seqExplorer, scanModule, scanPreview) {
                 this.nv = nvModule;

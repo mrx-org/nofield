@@ -5,7 +5,8 @@ export class NiivueModule {
   constructor(options = {}) {
     this.instanceId = Math.random().toString(36).substr(2, 5);
     this.canvasId = `gl-${Math.random().toString(36).substr(2, 9)}`;
-    this.options = options;
+    // JSON tab: show when ?pro=1 (window.pro) or when options.showJsonTab is true
+    this.options = { ...options, showJsonTab: options.showJsonTab === true || !!(typeof window !== 'undefined' && window.pro) };
     this.nv = new Niivue({ 
       logging: false,
       loadingText: "Load a phantom.",
@@ -357,7 +358,7 @@ export class NiivueModule {
             Ctrl+Middle: Zoom<br>
             Left/Right: 4D frame (when volume has 4D)
           </div>
-          <div id="debugInfo-${this.instanceId}" class="hint" style="font-family:monospace;font-size:10px;white-space:pre;line-height:1.4;margin-top:4px;color:#aaa;"></div>
+          ${typeof window !== 'undefined' && window.pro ? `<div id="debugInfo-${this.instanceId}" class="hint" style="font-family:monospace;font-size:10px;white-space:pre;line-height:1.4;margin-top:4px;color:#aaa;"></div>` : ''}
         </div>
     `;
   }

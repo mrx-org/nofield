@@ -66,3 +66,8 @@ Mobile-specific styles are defined in `no_field_mobile.css`:
 - Footer cards use `scroll-snap` for smooth card-based navigation
 - Dot indicators are visible and interactive on mobile
 - Various spacing and sizing adjustments for touch-friendly targets
+
+
+## Pro mode
+- **Activation**: URL `?pro=1` (or `true`/`yes`). Parsed in `index.html` and `viewer.html`; stored as `window.pro` for use by any module.
+- **When on**: Niivue shows the JSON tab (phantom config) and the OPTIONS-tab debug block (volume/FOV/cursor info). No persistence; reload without `?pro=1` to turn off.

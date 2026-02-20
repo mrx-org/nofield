@@ -20,11 +20,15 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/javascript/javascript.min.js"></script>
     <script type="module">
       import { initNiivueApp } from './niivue_app.js';
-      
+
+      // URL flag: ?pro=1 enables pro/debug behavior (same as index.html). Modules can check window.pro
+      const urlParams = new URLSearchParams(window.location.search);
+      window.pro = /^1|true|yes$/i.test(urlParams.get('pro') || '');
+
       // Standalone mode: auto-initialize
       window.addEventListener('DOMContentLoaded', async () => {
         try {
-          await initNiivueApp('niivue-container', { showJsonTab: true });
+          await initNiivueApp('niivue-container', {}); // JSON tab shown when ?pro=1 (window.pro)
         } catch (e) {
           console.error("Initialization failed:", e);
         }
