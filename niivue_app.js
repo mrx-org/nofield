@@ -134,6 +134,57 @@ export class NiivueModule {
     this.rebuildFovLive(true);
   }
 
+  async confirmPhantomReset() {
+    if (!this.nv.volumes?.length) return true;
+    return new Promise((resolve) => {
+      const overlay = document.createElement('div');
+      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:10000;';
+      const box = document.createElement('div');
+      box.style.cssText = 'background:#1e1e2e;color:#ccc;padding:20px 28px;border-radius:8px;max-width:360px;text-align:center;font-family:sans-serif;';
+      box.innerHTML = `<p style="margin:0 0 16px;font-size:14px;">Loading a new phantom removes <b>all</b> volumes, scans, and masks from the viewer.</p>
+        <div style="display:flex;gap:10px;justify-content:center;">
+          <button id="_prc" style="padding:6px 18px;border:none;border-radius:4px;background:#e06c75;color:#fff;cursor:pointer;">Proceed</button>
+          <button id="_pcc" style="padding:6px 18px;border:none;border-radius:4px;background:#555;color:#ccc;cursor:pointer;">Cancel</button>
+        </div>`;
+      overlay.appendChild(box);
+      document.body.appendChild(overlay);
+      box.querySelector('#_prc').onclick = () => { document.body.removeChild(overlay); resolve(true); };
+      box.querySelector('#_pcc').onclick = () => { document.body.removeChild(overlay); resolve(false); };
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) { document.body.removeChild(overlay); resolve(false); } });
+    });
+  }
+
+  resetViewer() {
+    if (this.fovMesh) { this.nv.removeMesh(this.fovMesh); this.fovMesh = null; }
+    this.fovMeshData = null;
+    if (this.showFov) this.showFov.checked = false;
+    while (this.nv.volumes.length) this.nv.removeVolume(this.nv.volumes[0]);
+    this.volumeGroups = [];
+    this.selectedVolume = null;
+    this.lastLocationMm = null;
+    this.lastLocationVox = null;
+    this.voxelSpacingMm = null;
+    this.fullFovMm = null;
+    this.updateVolumeList();
+    this.nv.drawScene();
+  }
+
+  refreshFovForNewVolume() {
+    const info = this.getVolumeInfo();
+    if (!info?.dim3) return;
+    this.voxelSpacingMm = this.estimateVoxelSpacingMm(info);
+    const [dx, dy, dz] = info.dim3;
+    this.fullFovMm = [dx * this.voxelSpacingMm[0], dy * this.voxelSpacingMm[1], dz * this.voxelSpacingMm[2]];
+    const sr = (s, n, mm, def) => { s.min = n.min = "1"; s.max = n.max = "600"; s.step = n.step = "1"; s.value = n.value = def ? String(def) : String(Math.round(mm)); };
+    sr(this.fovX, this.fovXVal, this.fullFovMm[0], 220); sr(this.fovY, this.fovYVal, this.fullFovMm[1], 220); sr(this.fovZ, this.fovZVal, this.fullFovMm[2], 10);
+    const so = (s, n) => { s.min = n.min = "-500"; s.max = n.max = "500"; s.step = n.step = "0.1"; s.value = n.value = "0"; };
+    so(this.fovOffX, this.fovOffXVal); so(this.fovOffY, this.fovOffYVal); so(this.fovOffZ, this.fovOffZVal);
+    this.syncFovLabels();
+    if (this.showFov) this.showFov.checked = true;
+    this.requestFovUpdate();
+    this.updateDebugInfo();
+  }
+
   renderViewer(target) {
     this.containerViewer = typeof target === 'string' ? document.getElementById(target) : target;
     if (!this.containerViewer) throw new Error(`Viewer target not found: ${target}`);
@@ -306,6 +357,7 @@ export class NiivueModule {
             Ctrl+Middle: Zoom<br>
             Left/Right: 4D frame (when volume has 4D)
           </div>
+          <div id="debugInfo-${this.instanceId}" class="hint" style="font-family:monospace;font-size:10px;white-space:pre;line-height:1.4;margin-top:4px;color:#aaa;"></div>
         </div>
     `;
   }
@@ -734,6 +786,7 @@ export class NiivueModule {
     this.maskXVal = qs("maskXVal");
     this.maskYVal = qs("maskYVal");
     this.maskZVal = qs("maskZVal");
+    this.debugInfo = qs("debugInfo");
     this.downloadFovMeshBtn = qs("downloadFovMesh");
     this.azVal = qs("azVal");
     this.elVal = qs("elVal");
@@ -864,6 +917,7 @@ export class NiivueModule {
 
         // Update crosshair intensity (bottom-left overlay)
         this.updateCrosshairIntensity(vox);
+        this.updateDebugInfo();
       } catch (e) { console.warn("onLocationChange handler failed", e); }
     };
 
@@ -1200,6 +1254,8 @@ os.makedirs('/phantom/averaged', exist_ok=True)
         const entries = Array.from(e.target.files || []);
         e.target.value = "";
         if (!entries.length) return;
+        if (!await this.confirmPhantomReset()) return;
+        this.resetViewer();
         const rootDir = entries[0]?.webkitRelativePath?.split("/")[0] || "";
         const jsonFiles = entries.filter(f => {
           if (!f.name.toLowerCase().endsWith(".json")) return false;
@@ -1229,6 +1285,7 @@ os.makedirs('/phantom/averaged', exist_ok=True)
           chosenName = chosen.name;
         }
         await this.handleJsonExecute(chosenName);
+        this.refreshFovForNewVolume();
       };
     }
 
@@ -1278,8 +1335,11 @@ os.makedirs('/phantom/averaged', exist_ok=True)
 
     this.downloadFovMeshBtn.addEventListener("click", () => this.handleDownloadFovMesh());
     this.resampleToFovBtn.addEventListener("click", () => this.handleResampleToFov());
-    this.btnDemo.onclick = () => {
-      this.loadUrl(this.DEMO_URL, "mni152.nii.gz", true);
+    this.btnDemo.onclick = async () => {
+      if (!await this.confirmPhantomReset()) return;
+      this.resetViewer();
+      await this.loadUrl(this.DEMO_URL, "mni152.nii.gz", true);
+      this.refreshFovForNewVolume();
       if (this.options.showJsonTab) this.updateJsonTab();
     };
     this.fileInput.onchange = async (e) => {
@@ -1289,6 +1349,8 @@ os.makedirs('/phantom/averaged', exist_ok=True)
       const jsonFile = files.find(f => f.name.toLowerCase().endsWith('.json'));
       const niftiFiles = files.filter(f => /\.nii(\.gz)?$/i.test(f.name));
       if (jsonFile && niftiFiles.length > 0) {
+        if (!await this.confirmPhantomReset()) return;
+        this.resetViewer();
         await this.loadMultiPhantomFromFiles(jsonFile, niftiFiles);
         if (this.options.showJsonTab) this.updateJsonTab();
       } else if (jsonFile && niftiFiles.length === 0) {
@@ -1724,7 +1786,6 @@ os.makedirs('/phantom/averaged', exist_ok=True)
       if (!vol || !dim3 || !rasMM || rasMM.length < 3) return null;
       const [dx, dy, dz] = dim3;
       const spacing = this.voxelSpacingMm ?? [1, 1, 1];
-      const fullMm = this.fullFovMm ?? [dx * spacing[0], dy * spacing[1], dz * spacing[2]];
       try {
           const vox2mm = this.voxToMmFactory(vol, affine);
           const o  = vox2mm(0, 0, 0);
@@ -1743,9 +1804,9 @@ os.makedirs('/phantom/averaged', exist_ok=True)
           const vz = ((d*h-e*g)*w[0] + (b*g-a*h)*w[1] + (a*e-b*d)*w[2]) * inv;
           const cVx = (dx - 1) / 2, cVy = (dy - 1) / 2, cVz = (dz - 1) / 2;
           return [
-              (vx - cVx) * spacing[0] + fullMm[0] / 2,
-              (vy - cVy) * spacing[1] + fullMm[1] / 2,
-              (vz - cVz) * spacing[2] + fullMm[2] / 2
+              (vx - cVx) * spacing[0],
+              (vy - cVy) * spacing[1],
+              (vz - cVz) * spacing[2]
           ];
       } catch (_) {
           return null;
@@ -1799,7 +1860,15 @@ os.makedirs('/phantom/averaged', exist_ok=True)
       if (dimRaw.length >= 4) dim3 = [dimRaw[1], dimRaw[2], dimRaw[3]];
       else if (dimRaw.length === 3) dim3 = [dimRaw[0], dimRaw[1], dimRaw[2]];
     }
-    const affine = hdr?.affine ?? vol?.affine ?? vol?.matRAS ?? vol?.mat?.affine ?? null;
+    let affine = hdr?.affine ?? vol?.affine ?? vol?.matRAS ?? vol?.mat?.affine ?? null;
+    if (Array.isArray(affine) && affine.length < 16 && Array.isArray(affine[0])) {
+      affine = [
+        affine[0][0],affine[0][1],affine[0][2],affine[0][3],
+        affine[1][0],affine[1][1],affine[1][2],affine[1][3],
+        affine[2][0],affine[2][1],affine[2][2],affine[2][3],
+        affine[3][0],affine[3][1],affine[3][2],affine[3][3]
+      ];
+    }
     return { vol, hdr, dim3, affine };
   }
 
@@ -1869,11 +1938,9 @@ os.makedirs('/phantom/averaged', exist_ok=True)
     const fovMmX = Number(this.fovX.value), fovMmY = Number(this.fovY.value), fovMmZ = Number(this.fovZ.value);
     const offMmX = Number(this.fovOffX.value), offMmY = Number(this.fovOffY.value), offMmZ = Number(this.fovOffZ.value);
     const rotX = Number(this.fovRotX.value), rotY = Number(this.fovRotY.value), rotZ = Number(this.fovRotZ.value);
-    const fullMm = this.fullFovMm ?? [dx * sxMm, dy * syMm, dz * szMm];
-    const baseFOVoffsetMm = [-fullMm[0]/2, -fullMm[1]/2, -fullMm[2]/2];
-    const cx = (dx-1)/2 + (offMmX + baseFOVoffsetMm[0])/sxMm;
-    const cy = (dy-1)/2 + (offMmY + baseFOVoffsetMm[1])/syMm;
-    const cz = (dz-1)/2 + (offMmZ + baseFOVoffsetMm[2])/szMm;
+    const cx = (dx-1)/2 + offMmX/sxMm;
+    const cy = (dy-1)/2 + offMmY/syMm;
+    const cz = (dz-1)/2 + offMmZ/szMm;
     const fovLenVoxX = fovMmX / sxMm, fovLenVoxY = fovMmY / syMm, fovLenVoxZ = fovMmZ / szMm;
     
     const toRad = (d) => (d * Math.PI) / 180;
@@ -1945,6 +2012,7 @@ os.makedirs('/phantom/averaged', exist_ok=True)
             if (typeof this.fovMesh.updateMesh === 'function') this.fovMesh.updateMesh(this.nv.gl);
         }
         this.nv.drawScene();
+        this.updateDebugInfo();
      } catch(e) { console.error("FOV Update failed", e); }
   }
 
@@ -1966,6 +2034,81 @@ os.makedirs('/phantom/averaged', exist_ok=True)
   rebuildFovLive(forceSync = false) {
     if (forceSync) this.syncFovLabels();
     if (this.showFov && this.showFov.checked && this.nv.volumes?.length) this.requestFovUpdate();
+    this.updateDebugInfo();
+  }
+
+  updateDebugInfo() {
+    if (!this.debugInfo) return;
+    try {
+      const { vol, dim3, affine } = this.getVolumeInfo();
+      if (!vol || !dim3) { this.debugInfo.textContent = "No volume loaded"; return; }
+      const [dx, dy, dz] = dim3;
+      const sp = this.voxelSpacingMm ?? [1, 1, 1];
+      const f = (v) => v != null ? v.map(n => Number(n).toFixed(1)).join(', ') : '—';
+      const f2 = (v) => v != null ? v.map(n => Number(n).toFixed(2)).join(', ') : '—';
+
+      // vox2mm used by getFovGeometry (may prefer vol.vox2mm over hdr.affine)
+      const v2mm = this.voxToMmFactory(vol, affine);
+      const niiOrigin = v2mm(0, 0, 0);
+      const niiCenter = v2mm((dx-1)/2, (dy-1)/2, (dz-1)/2);
+
+      // hdr.affine translation (raw NIfTI origin)
+      const hdr = vol?.hdr ?? vol?.header;
+      let hdrTrans = null;
+      if (hdr?.affine) {
+        const a = hdr.affine;
+        hdrTrans = Array.isArray(a[0]) ? [a[0][3], a[1][3], a[2][3]] : (a.length >= 16 ? [a[3], a[7], a[11]] : null);
+      }
+
+      // matRAS translation (Niivue internal, typically stripped)
+      let matRASTrans = null;
+      if (vol.matRAS && vol.matRAS.length >= 16) {
+        const m = vol.matRAS;
+        matRASTrans = [m[3], m[7], m[11]];
+      }
+
+      // Niivue display-space: probe vol.vox2mm directly if available
+      let nvOrigin = null, nvCenter = null;
+      if (typeof vol.vox2mm === 'function') {
+        try {
+          const o = vol.vox2mm([0, 0, 0]);
+          if (o?.length >= 3) nvOrigin = [o[0], o[1], o[2]];
+          const c = vol.vox2mm([(dx-1)/2, (dy-1)/2, (dz-1)/2]);
+          if (c?.length >= 3) nvCenter = [c[0], c[1], c[2]];
+        } catch(_) {}
+      }
+
+      // FOV state
+      const fovCenter = this.fovMeshData?.centerWorld;
+      const fovSize = [this.fovX?.value, this.fovY?.value, this.fovZ?.value].map(Number);
+      const fovOff = [this.fovOffX?.value, this.fovOffY?.value, this.fovOffZ?.value].map(Number);
+      const fovRot = [this.fovRotX?.value, this.fovRotY?.value, this.fovRotZ?.value].map(Number);
+
+      // Cursor
+      const curMm = this.lastLocationMm;
+      const curVox = this.lastLocationVox;
+
+      const lines = [
+        `── Volume ──`,
+        `Dims:        ${dx}×${dy}×${dz}`,
+        `Spacing:     ${sp.map(s=>s.toFixed(2)).join(', ')}`,
+        `hdr.affine t:${hdrTrans ? ' '+f(hdrTrans) : ' —'}`,
+        `matRAS t:    ${matRASTrans ? f2(matRASTrans) : '—'}`,
+        `vox2mm(0):   ${nvOrigin ? f(nvOrigin) : f(niiOrigin)}${nvOrigin ? ' (vol)' : ' (aff)'}`,
+        `vox2mm(ctr): ${nvCenter ? f(nvCenter) : f(niiCenter)}${nvCenter ? ' (vol)' : ' (aff)'}`,
+        `── FOV ──`,
+        `Size:        ${f(fovSize)} mm`,
+        `Offset:      ${f(fovOff)} mm`,
+        `Rotation:    ${f(fovRot)}°`,
+        `Center world:${fovCenter ? ' '+f(fovCenter) : ' —'}`,
+        `── Cursor ──`,
+        `mm:          ${f(curMm)}`,
+        `vox:         ${f(curVox)}`,
+      ];
+      this.debugInfo.textContent = lines.join('\n');
+    } catch (_) {
+      this.debugInfo.textContent = "debug info error";
+    }
   }
 
   bindBiDirectional(slider, numInput, callback) {
@@ -2451,9 +2594,6 @@ os.makedirs('/phantom/averaged', exist_ok=True)
       const groupId = "g-" + Math.random().toString(36).substr(2, 9);
       const jsonName = jsonFile.name.replace(/\.json$/i, "");
       this.setStatus(`loading multi-phantom: ${jsonName} (${ordered.length} volumes)`);
-      const toRemove = this.nv.volumes.filter(v => !v.name.startsWith("scan_") && !v.name.toLowerCase().includes("mask"));
-      toRemove.forEach(v => this.nv.removeVolume(v));
-      this.volumeGroups = [];
       // Ensure PD volume is first (volume 0) if present
       const pdIdx = ordered.findIndex(f => /_PD\.nii(\.gz)?$/i.test(f.name));
       if (pdIdx > 0) {
@@ -2480,20 +2620,7 @@ os.makedirs('/phantom/averaged', exist_ok=True)
         setTimeout(() => URL.revokeObjectURL(u), 30000);
       }
       this.volumeGroups.push({ id: groupId, jsonName, volumes: groupVolumes, jsonContent: jsonText, jsonFileName: jsonFile.name });
-      const info = this.getVolumeInfo();
-      if (info) {
-        this.voxelSpacingMm = this.estimateVoxelSpacingMm(info);
-        if (info.dim3) {
-          const [dx, dy, dz] = info.dim3;
-          this.fullFovMm = [dx * this.voxelSpacingMm[0], dy * this.voxelSpacingMm[1], dz * this.voxelSpacingMm[2]];
-          const sr = (s, n, mm, def) => { s.min = n.min = "1"; s.max = n.max = "600"; s.step = n.step = "1"; s.value = n.value = def ? String(def) : String(Math.round(mm)); };
-          sr(this.fovX, this.fovXVal, this.fullFovMm[0], 220); sr(this.fovY, this.fovYVal, this.fullFovMm[1], 220); sr(this.fovZ, this.fovZVal, this.fullFovMm[2], 10);
-          const so = (s, n) => { s.min = n.min = "-500"; s.max = n.max = "500"; s.step = n.step = "0.1"; s.value = n.value = "0"; };
-          so(this.fovOffX, this.fovOffXVal); so(this.fovOffY, this.fovOffYVal); so(this.fovOffZ, this.fovOffZVal);
-        }
-      }
-      this.syncFovLabels();
-      this.updateFovMesh();
+      this.refreshFovForNewVolume();
       this.updateVolumeList();
       this.updatePreviewFromSelection();
       this.triggerHighlight();
@@ -2513,9 +2640,6 @@ os.makedirs('/phantom/averaged', exist_ok=True)
 
       let addedVolumes = [];
       if (!isAdding && !isScan && !isMask) {
-          // Phantom logic: Remove all other phantoms before adding the new one
-          const toRemove = this.nv.volumes.filter(v => !v.name.startsWith('scan_') && !v.name.toLowerCase().includes("mask"));
-          toRemove.forEach(v => this.nv.removeVolume(v));
           addedVolumes = await this.nv.addVolumesFromUrl([{ url, name: name??"vol", colormap: "gray", opacity: 1.0 }]);
       } else {
           // Scans, Masks, or explicit additions
@@ -2532,18 +2656,9 @@ os.makedirs('/phantom/averaged', exist_ok=True)
       }
 
       if (!isAdding || this.nv.volumes.length === 1) {
-          const info = this.getVolumeInfo();
-          this.voxelSpacingMm = this.estimateVoxelSpacingMm(info);
-          if (info.dim3) {
-              const [dx, dy, dz] = info.dim3;
-              this.fullFovMm = [dx*this.voxelSpacingMm[0], dy*this.voxelSpacingMm[1], dz*this.voxelSpacingMm[2]];
-              const sr = (s,n,mm,def) => { s.min=n.min="1"; s.max=n.max="600"; s.step=n.step="1"; s.value=n.value=def?String(def):String(Math.round(mm)); };
-              sr(this.fovX,this.fovXVal,this.fullFovMm[0],220); sr(this.fovY,this.fovYVal,this.fullFovMm[1],220); sr(this.fovZ,this.fovZVal,this.fullFovMm[2],10);
-              const so = (s,n) => { s.min=n.min="-500"; s.max=n.max="500"; s.step=n.step="0.1"; s.value=n.value="0"; };
-              so(this.fovOffX,this.fovOffXVal); so(this.fovOffY,this.fovOffYVal); so(this.fovOffZ,this.fovOffZVal);
-          }
+          this.refreshFovForNewVolume();
       }
-      this.syncFovLabels(); this.updateFovMesh(); this.updateVolumeList(); 
+      this.updateVolumeList(); 
       
       // If a scan was loaded, select it and update preview
       if (isScan) {

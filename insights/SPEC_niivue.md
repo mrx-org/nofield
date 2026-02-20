@@ -14,19 +14,52 @@ Modular medical imaging component for 3D/orthographic NIfTI visualization and in
   - Standardized mouse gestures: Ctrl+Left (Move FOV), Ctrl+Right (Rotate FOV), Ctrl+Scroll (Resize FOV), Ctrl+Middle Drag (Zoom).
   - Automatic mode switching to "Planning" on any viewer interaction.
 
+## Coordinate System & Affine Handling
+- **Affine source**: `getVolumeInfo(targetVol?)` is the single source of truth for volume metadata (dims, affine, header). All code paths use this instead of parsing `hdr.affine` independently.
+- **Nested array flattening**: NIfTI `hdr.affine` is a nested 4x4 array (length 4). `getVolumeInfo` flattens it to a row-major 16-element array so all downstream consumers (`voxelToWorldFactory`, `getFovGeometry`, `getVolumeNifti`, etc.) work correctly.
+- **Voxel spacing**: Estimated from the affine by measuring world-space distance between adjacent voxels, not from `pixDims` (which can be inconsistent after reorientation).
+- **Transform factory**: `voxToMmFactory(vol, affine)` prefers Niivue's `vol.vox2mm` when available, falling back to affine-based math. `worldMmToFovOffset` inverts this by probing the forward transform at 4 points, guaranteeing self-consistency.
+
+## FOV Offset Convention
+- **Offset = displacement in mm from the NIfTI grid center voxel.** When offset is (0, 0, 0), the FOV is centered at voxel `((dx-1)/2, (dy-1)/2, (dz-1)/2)`.
+- **Click-to-offset pipeline**: Screen click -> RAS world mm (via Niivue slice geometry) -> voxel (via probe-and-invert) -> offset `(vx - centerVox) * spacing`.
+- **FOV mesh**: Built by `getFovGeometry()` which transforms FOV corner voxels to world coordinates using `voxToMmFactory`. The mesh is displayed as a semi-transparent overlay in the 3D/slice views.
+
+## Phantom Load Reset Flow
+Loading a new phantom (Load Demo, Add Folder, or file-with-JSON) triggers a full reset:
+1. **Confirmation dialog**: Warns the user that all volumes, scans, and masks will be removed.
+2. **`resetViewer()`**: Removes FOV mesh, clears all Niivue volumes, resets internal state (volumeGroups, spacing, fullFovMm, etc.).
+3. **Load new data**: Via `loadUrl` or `loadMultiPhantomFromFiles`.
+4. **`refreshFovForNewVolume()`**: Re-reads volume info from the new phantom, recalculates voxel spacing and full FOV extent, resets offset sliders to (0, 0, 0) (centered), enables FOV checkbox, triggers mesh rebuild and debug panel update.
+
+## FOV Export
+- **Download FOV + NIfTI**: Exports RAS and LPS STL meshes of the FOV box, a binary FOV mask NIfTI (with rotated affine matching the FOV orientation), and the current primary volume as NIfTI. Both sform and qform are set identically (code=2).
+- **Resample to FOV**: Uses Pyodide to resample the current volume(s) onto the FOV mask grid. Supports multi-phantom groups (resamples each volume in the group). Results are added to the volume list.
+
+## Debug Panel
+A live debug info panel (in the FOV tab hint area) shows:
+- Volume dims, spacing, `hdr.affine` translation, `matRAS` translation
+- `vox2mm(0)` and `vox2mm(center)` to verify affine correctness
+- FOV size, offset, rotation, world center
+- Cursor position in mm and voxel coordinates
+
 ## Modular API
 - **Class**: `NiivueModule`
 - **Parts**: 
   - `renderViewer(target)`: The WebGL canvas and status overlay.
   - `renderControls(target)`: Compact tabbed UI (VIEWER, OPTIONS, FOV).
 - **Key Methods**:
+  - `getVolumeInfo(targetVol?)`: Single source of truth for volume metadata with affine flattening.
   - `loadUrl(url, name, isAdding)`: Robust additive or destructive volume loading with initialization queuing.
+  - `confirmPhantomReset()` / `resetViewer()` / `refreshFovForNewVolume()`: Full phantom switch lifecycle.
+  - `getFovGeometry()`: Computes FOV mesh vertices, center, size, and rotation in world coordinates.
+  - `worldMmToFovOffset(rasMM)`: Converts a world-space click position to FOV offset values.
+  - `generateFovMaskNifti()`: Creates a binary NIfTI mask matching the current FOV box.
   - `triggerHighlight()`: Triggers the green visual feedback animation.
   - `updateVolumeList()`: Rebuilds the synchronized management UI.
 
 ## Phantom JSON Execution (viewer)
 - **JSON tab** (only when using `viewer.html`): Lists JSON phantom config filenames from the current session; selecting one shows its content in a CodeMirror editor. Buttons: **Save** / **Save As** / **Revert** (in VFS), **Execute** (runs phantom and loads result into the viewer).
-- **Add Folder**: User selects a folder; all NIfTIs and JSONs are uploaded to Pyodide’s VFS under `/phantom`. No raw NIfTIs are loaded into Niivue; the user picks one JSON (from a dialog or the JSON tab), then **Execute** runs.
-- **Execute**: Calls the same logic as the standalone `data/execute_json.py` inside Pyodide: `write_executed=False`, `write_averaged=True`, output to `/phantom/averaged`. Produces 3D density-weighted averaged maps (density, T1, T2, T2′, ADC, dB0, B1+, B1−) with NaN where total density ≤ threshold (default 0.01). Resulting NIfTIs are read from VFS and loaded into Niivue as one volume group (label `*_averaged`).
+- **Add Folder**: User selects a folder; all NIfTIs and JSONs are uploaded to Pyodide's VFS under `/phantom`. No raw NIfTIs are loaded into Niivue; the user picks one JSON (from a dialog or the JSON tab), then **Execute** runs.
+- **Execute**: Calls the same logic as the standalone `data/execute_json.py` inside Pyodide: `write_executed=False`, `write_averaged=True`, output to `/phantom/averaged`. Produces 3D density-weighted averaged maps (density, T1, T2, T2', ADC, dB0, B1+, B1-) with NaN where total density <= threshold (default 0.01). Resulting NIfTIs are read from VFS and loaded into Niivue as one volume group (label `*_averaged`).
 - **Single source of truth**: Phantom execution logic lives in `data/execute_json.py`; the viewer fetches and runs that script in Pyodide, so CLI and browser stay in sync.
-

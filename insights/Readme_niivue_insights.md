@@ -15,17 +15,40 @@
 
 ---
 
-## Critical Niivue Limitation: vol.matRAS Missing Translation
+## Niivue Affine Formats: hdr.affine vs vol.matRAS
 
-### The Problem
-**`vol.matRAS` does NOT include translation (world coordinate origin)**.
-During Niivue's `calculateRAS()` process, the translation component from the NIfTI header is lost.
+### Update (2026-02)
+Previous documentation stated that `vol.matRAS` is missing translation. **Empirical testing shows both `hdr.affine` and `vol.matRAS` contain identical translations** for tested phantoms:
+```
+hdr.affine t: -75.8, -110.8, -71.8
+matRAS t:    -75.76, -110.76, -71.76
+```
+The earlier confusion likely stemmed from a different bug (see "Nested Array Parsing" below).
 
-### The Solution
-When exporting NIfTI files from Niivue, you must **manually combine** the components:
-1. **Rotation/Scaling**: Extract from `vol.matRAS` (preserves current orientation).
-2. **Translation**: Extract from `hdr.affine` (preserves original world origin).
-3. **Write to Both**: Write the resulting 4x4 matrix to both `sform` and `qform`.
+### Format Difference
+- **`hdr.affine`**: Stored as a **nested 4x4 array** (`[[r00,r01,r02,tx],[r10,...],...]`), length = 4.
+- **`vol.matRAS`**: Stored as a **flat row-major 16-element array**, length = 16.
+
+### Critical Bug: Nested Array Parsing Failure
+`voxelToWorldFactory(affine)` checks `affine.length >= 16` and only handles flat arrays. When `hdr.affine` (nested, length=4) is passed, it **falls through to identity** `(x,y,z) => [x,y,z]`, silently discarding all rotation, scaling, and translation.
+
+This caused the FOV mesh to be built in "voxel = world" space instead of proper NIfTI world coordinates. For phantoms where the NIfTI translation happened to be small, the error was not noticeable.
+
+### The Fix (Implemented)
+Flatten nested arrays in `getVolumeInfo()` before passing to the transform pipeline:
+```javascript
+if (Array.isArray(affine) && affine.length < 16 && Array.isArray(affine[0])) {
+  affine = [
+    affine[0][0], affine[0][1], affine[0][2], affine[0][3],
+    affine[1][0], affine[1][1], affine[1][2], affine[1][3],
+    affine[2][0], affine[2][1], affine[2][2], affine[2][3],
+    affine[3][0], affine[3][1], affine[3][2], affine[3][3]
+  ];
+}
+```
+
+### Export Recommendation
+For NIfTI export, use `hdr.affine` as the primary source (after flattening). Fall back to `vol.matRAS` only if `hdr.affine` is unavailable. Both contain the same data; `hdr.affine` is the canonical NIfTI source.
 
 ---
 
@@ -148,29 +171,23 @@ resampled_img.set_qform(reference_affine, code=2)
 
 ---
 
-## Niivue Export: Avoid Mixing Affine Sources
+## Niivue Export: Affine Source Selection
 
-### The Problem
-When exporting a volume from Niivue, there are two potential affine sources:
-- `vol.matRAS`: Niivue's internal rendering matrix (may be modified during loading)
-- `hdr.affine`: The sform/qform read from the NIfTI header
+### Background
+Niivue provides two affine sources that (as of tested versions) contain **identical data** in different formats:
+- `hdr.affine`: Nested 4x4 array from the NIfTI header (canonical source)
+- `vol.matRAS`: Flat 16-element row-major array (Niivue internal)
 
-**Mixing rotation from `matRAS` with translation from `hdr.affine` causes small alignment offsets** if they don't match exactly.
-
-### The Fix
-Use `hdr.affine` as the **single authoritative source** when exporting:
+### The Rule
+Use `hdr.affine` as the **primary source** (after flattening to row-major 16), fall back to `vol.matRAS` only if unavailable. Always flatten nested arrays before use:
 ```javascript
-// Priority: Use hdr.affine (sform from file) as primary source
 if (hdr?.affine) {
-    currentAffineRow = parseAffine(hdr.affine);
+    currentAffineRow = parseAffine(hdr.affine); // handles nested → flat
 }
-// Only fall back to matRAS if hdr.affine not available
 if (!currentAffineRow && vol.matRAS) {
-    currentAffineRow = affineColToRowMajor(vol.matRAS);
+    currentAffineRow = [...vol.matRAS]; // already flat-16
 }
 ```
-
-This preserves the exact affine that was set (e.g., from Python resampling) without Niivue's internal modifications.
 
 ---
 
@@ -196,57 +213,44 @@ Because this logic is mathematically robust and hardcoded into the export, the m
 
 ## Interactive FOV Positioning via Mouse Click
 
-### The Problem
-When using Ctrl+click to position the FOV box at a specific location, the FOV appeared at the **center of the brain** instead of at the **clicked position**.
+### Offset Convention
+The FOV offset values (`fovOffX/Y/Z`) represent **displacement in mm from the NIfTI grid center voxel**:
+$$\text{cx} = \frac{d_x - 1}{2} + \frac{\text{offX}}{s_x}$$
+When offset = 0, the FOV is centered at the center voxel of the NIfTI volume. The center voxel's world position depends on the NIfTI affine.
 
-### Root Cause
-The original implementation computed FOV offsets using a **voxel-based approach**:
-1. Get voxel coordinates from `lastLocationVox` (from Niivue's `onLocationChange`)
-2. Convert voxel → offset using custom affine transform
-3. Use `voxelToWorldFactory(affine)` to transform mesh vertices to world coordinates
+### Click-to-Offset Pipeline
 
-**The problem**: The affine matrix from `hdr.affine` or `vol.matRAS` was missing the translation component (see "Critical Niivue Limitation" above). This caused the voxel-to-world transform to behave like an identity transform, so voxel $(0,0,0)$ incorrectly mapped to world $(0,0,0)$ instead of the actual world position.
+1. **Screen → RAS world mm**: Use Niivue's slice geometry (`screenSlices[tileIndex]`) to compute the clicked world position from mouse coordinates. This is more reliable than using affine transforms directly.
 
-### The Solution
-Instead of computing world coordinates via a potentially broken affine, **use Niivue's slice geometry directly** to compute world mm from the mouse position:
+2. **RAS world mm → Voxel**: Invert the same vox→mm transform used by `getFovGeometry()`. To guarantee self-consistency, **probe** the transform at 4 points and invert the recovered 3x3 matrix, rather than relying on any stored affine or Niivue API (`convertMM2Frac` may use a different internal transform).
 
-```javascript
-// Get slice info for the clicked tile
-const slice = nv.screenSlices[tileIndex];
-const ltwh = slice.leftTopWidthHeight;
+3. **Voxel → Offset**: `offX = (vx - centerVox_x) * spacing_x`
 
-// Compute fractional position within slice
-let fX = (screenX - ltwh[0]) / ltwh[2];
-const fY = 1.0 - (screenY - ltwh[1]) / ltwh[3];
-if (ltwh[2] < 0) fX = 1.0 - fX;
+### Key Insight: Transform Self-Consistency
+The FOV pipeline has **three** vox↔mm transforms that must be consistent:
+- `voxToMmFactory(vol, affine)` — used in `getFovGeometry()` to place mesh vertices
+- `worldMmToFovOffset()` — inverts the above to convert click position to offset
+- Niivue's slice renderer — determines where the volume appears on screen
 
-// Compute slice-local mm coordinates
-let xyzMM = [
-    slice.leftTopMM[0] + fX * slice.fovMM[0],
-    slice.leftTopMM[1] + fY * slice.fovMM[1],
-    0
-];
-const v = slice.AxyzMxy;
-xyzMM[2] = v[2] + v[4] * (xyzMM[1] - v[1]) - v[3] * (xyzMM[0] - v[0]);
-
-// Convert to RAS world coordinates based on slice orientation
-let rasMM;
-if (slice.axCorSag === 1) rasMM = [xyzMM[0], xyzMM[2], xyzMM[1]];      // Coronal
-else if (slice.axCorSag === 2) rasMM = [xyzMM[2], xyzMM[0], xyzMM[1]]; // Sagittal
-else rasMM = xyzMM;                                                     // Axial
-```
-
-### Key Insight
-The FOV offset values (`fovOffX/Y/Z`) represent **displacement in world mm from the brain center (world origin)**. When offset = 0, the FOV is centered at world $(0,0,0)$. So when clicking at world position $(x, y, z)$, the offset should simply be $(x, y, z)$ — no complex voxel conversion needed.
-
-### Additional Improvement
-Also store `lastLocationMm` from Niivue's `onLocationChange` callback as a fallback when slice geometry is unavailable:
+If the forward and inverse transforms don't match exactly (e.g., one uses `hdr.affine` while the other uses `vol.vox2mm`), the FOV appears shifted. The **probe-and-invert** approach guarantees the inverse matches the forward path regardless of which internal Niivue path is active:
 
 ```javascript
-nv.onLocationChange = (data) => {
-    const { mm } = data;
-    if (mm?.length >= 3) {
-        this.lastLocationMm = [mm[0], mm[1], mm[2]];
-    }
-};
+const vox2mm = this.voxToMmFactory(vol, affine);
+const o  = vox2mm(0, 0, 0);
+const ex = vox2mm(1, 0, 0);
+const ey = vox2mm(0, 1, 0);
+const ez = vox2mm(0, 0, 1);
+// Recover 3x3 matrix columns, then invert via cofactors
 ```
+
+### Phantom Load Reset Flow
+Loading a new phantom (demo, folder, or file-with-JSON) must fully reset the viewer state. Without this, `getVolumeInfo()` may return stale data from the previous phantom. The reset sequence:
+1. **Confirmation dialog** — warns the user that all volumes/scans/masks will be removed.
+2. **`resetViewer()`** — removes FOV mesh, clears all volumes, resets FOV state variables.
+3. **Load new data** — via `loadUrl` or `loadMultiPhantomFromFiles`.
+4. **`refreshFovForNewVolume()`** — re-reads volume info, recalculates spacing and fullFovMm, resets offset sliders to 0,0,0 (centered), enables the FOV checkbox, and triggers a mesh rebuild.
+
+This replaces the previous approach where `loadMultiPhantomFromFiles` and `loadUrl` each had their own inline FOV-setup code, which was duplicated and prone to stale-volume bugs.
+
+### Fallback
+Store `lastLocationMm` from Niivue's `onLocationChange` callback for use when slice geometry is unavailable.
