@@ -34,7 +34,10 @@ Loading a new phantom (Load Demo, Add Folder, or file-with-JSON) triggers a full
 
 ## FOV Export
 - **Download FOV + NIfTI**: Exports RAS and LPS STL meshes of the FOV box, a binary FOV mask NIfTI (with rotated affine matching the FOV orientation), and the current primary volume as NIfTI. Both sform and qform are set identically (code=2).
-- **Resample to FOV**: Uses Pyodide to resample the current volume(s) onto the FOV mask grid. Supports multi-phantom groups (resamples each volume in the group). Results are added to the volume list.
+- **Resample to FOV**: Uses Pyodide (SciPy `map_coordinates` + nibabel) to resample current volume(s) onto the FOV mask grid. Supports multi-phantom groups (resamples each volume in the group). Results are added to the volume list.
+- **Robust output path**: Python writes a temporary `.nii` in Pyodide VFS; JS reads it via `pyodide.FS.readFile(...)`, validates NIfTI magic, then loads into Niivue.
+- **4D handling**: For 4D inputs, serial 3D frame resampling is used internally (default), then frames are stacked back into one 4D NIfTI to preserve structure.
+- **Cleanup & diagnostics**: Temporary VFS files are deleted after read (`FS.unlink`). Verbose resample logs are opt-in via `debugResampleToFov`; serial mode can be disabled with `resampleSerial3D: false`.
 
 ## Debug Panel
 A live debug info panel (in the FOV tab hint area) shows:
@@ -60,6 +63,6 @@ A live debug info panel (in the FOV tab hint area) shows:
 
 ## Phantom JSON Execution (viewer)
 - **JSON tab** (only when using `viewer.html`): Lists JSON phantom config filenames from the current session; selecting one shows its content in a CodeMirror editor. Buttons: **Save** / **Save As** / **Revert** (in VFS), **Execute** (runs phantom and loads result into the viewer).
-- **Add Folder**: User selects a folder; all NIfTIs and JSONs are uploaded to Pyodide's VFS under `/phantom`. No raw NIfTIs are loaded into Niivue; the user picks one JSON (from a dialog or the JSON tab), then **Execute** runs.
+- **Add Folder**: User selects a folder; all NIfTIs and JSONs are uploaded to Pyodide's VFS under `/phantom`. The chosen JSON's NIfTIs are loaded into Niivue (same as Add File). If multiple JSONs exist, a dialog picks which config is active. The user can then open the **JSON** tab and click **Execute** to build averaged maps (not automatic).
 - **Execute**: Calls the same logic as the standalone `data/execute_json.py` inside Pyodide: `write_executed=False`, `write_averaged=True`, output to `/phantom/averaged`. Produces 3D density-weighted averaged maps (density, T1, T2, T2', ADC, dB0, B1+, B1-) with NaN where total density <= threshold (default 0.01). Resulting NIfTIs are read from VFS and loaded into Niivue as one volume group (label `*_averaged`).
 - **Single source of truth**: Phantom execution logic lives in `data/execute_json.py`; the viewer fetches and runs that script in Pyodide, so CLI and browser stay in sync.

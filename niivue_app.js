@@ -1198,9 +1198,47 @@ def run_resampling(source_bytes, reference_bytes):
     ref_fh = nib.FileHolder(fileobj=io.BytesIO(reference_bytes))
     ref_img = nib.Nifti1Image.from_file_map({'header': ref_fh, 'image': ref_fh})
     resampled_img = resample_to_reference(source_img, ref_img, order=1)
-    out_fh = io.BytesIO()
-    resampled_img.to_file_map({'header': nib.FileHolder(fileobj=out_fh), 'image': nib.FileHolder(fileobj=out_fh)})
-    return out_fh.getvalue()
+    # Robust path in Pyodide: write canonical .nii then read bytes back.
+    # This avoids malformed in-memory returns observed with large 4D volumes.
+    out_path = '/tmp/__resampled_tmp.nii'
+    nib.save(resampled_img, out_path)
+    return out_path
+
+def run_resampling_serial3d_to_4d(source_bytes, reference_bytes):
+    source_bytes = source_bytes.to_py()
+    reference_bytes = reference_bytes.to_py()
+    source_fh = nib.FileHolder(fileobj=io.BytesIO(source_bytes))
+    source_img = nib.Nifti1Image.from_file_map({'header': source_fh, 'image': source_fh})
+    ref_fh = nib.FileHolder(fileobj=io.BytesIO(reference_bytes))
+    ref_img = nib.Nifti1Image.from_file_map({'header': ref_fh, 'image': ref_fh})
+
+    source_data = source_img.get_fdata(dtype=np.float32)
+    if source_data.ndim < 4 or source_data.shape[3] <= 1:
+        return run_resampling(source_bytes, reference_bytes)
+
+    frames = source_data.shape[3]
+    resampled_frames = []
+    frame_header = source_img.header.copy()
+    for t in range(frames):
+        frame_data = source_data[..., t]
+        frame_img = nib.Nifti1Image(frame_data, source_img.affine, header=frame_header)
+        frame_img.set_sform(source_img.get_sform(), code=int(source_img.header['sform_code']))
+        frame_img.set_qform(source_img.get_qform(), code=int(source_img.header['qform_code']))
+        resampled_frame = resample_to_reference(frame_img, ref_img, order=1)
+        resampled_frames.append(resampled_frame.get_fdata(dtype=np.float32))
+
+    out_data = np.stack(resampled_frames, axis=3)
+    out_header = source_img.header.copy()
+    out_img = nib.Nifti1Image(out_data, ref_img.affine, header=out_header)
+    out_img.set_sform(ref_img.affine, code=2)
+    out_img.set_qform(ref_img.affine, code=2)
+    ref_zooms = ref_img.header.get_zooms()[:3]
+    src_zooms = source_img.header.get_zooms()
+    dt = src_zooms[3] if len(src_zooms) > 3 else 1.0
+    out_img.header.set_zooms((ref_zooms[0], ref_zooms[1], ref_zooms[2], dt))
+    out_path = '/tmp/__resampled_tmp.nii'
+    nib.save(out_img, out_path)
+    return out_path
       `);
 
       // Load execute_phantom from standalone script (single source of truth)
@@ -1278,15 +1316,19 @@ os.makedirs('/phantom/averaged', exist_ok=True)
         }
         this.setStatus("Uploading files to Pyodide VFS...");
         await this.populatePyodideVFS(niftiFiles, jsonFiles);
-        if (this.options.showJsonTab) this.updateJsonTab();
         let chosenName = jsonFiles[0].name;
         if (jsonFiles.length > 1) {
           const chosen = await this.showJsonChoiceDialog(jsonFiles, niftiFiles);
           if (!chosen) return;
           chosenName = chosen.name;
         }
-        await this.handleJsonExecute(chosenName);
-        this.refreshFovForNewVolume();
+        this.jsonTabCurrentName = chosenName;
+        if (this.options.showJsonTab) this.updateJsonTab();
+        const chosenJsonFile = jsonFiles.find(f => f.name === chosenName) || jsonFiles[0];
+        await this.loadMultiPhantomFromFiles(chosenJsonFile, niftiFiles);
+        if (this.options.showJsonTab) {
+          this.setStatus(`NIfTIs loaded. Open the JSON tab and click Execute to build averaged maps.`);
+        }
       };
     }
 
@@ -2304,12 +2346,43 @@ os.makedirs('/phantom/averaged', exist_ok=True)
     } catch (e) { console.error(e); this.setStatus(`Error: ${e.message}`); }
   }
 
+  /** NIfTI-1 magic at byte offset 344 should be `n+1` + NUL (0x6E 0x2B 0x31 0x00). */
+  _niftiMagicAt344(u8) {
+    try {
+      if (!u8 || u8.byteLength < 348) {
+        return { ok: false, reason: u8 ? "too_short" : "missing", len: u8?.byteLength ?? 0 };
+      }
+      const a = u8[344], b = u8[345], c = u8[346], d = u8[347];
+      const ascii = String.fromCharCode(a, b, c);
+      const ok = ascii === "n+1" && d === 0;
+      return { ok, at344: [a, b, c, d], ascii: ok ? "n+1\\0" : `${ascii}\\x${d.toString(16)}` };
+    } catch (e) {
+      return { ok: false, reason: "error", error: String(e) };
+    }
+  }
+
+  /**
+   * Console diagnostics for Resample to FOV (phantom-dependent failures).
+   * @param {"reference"|"source"|"output"} kind
+   */
+  _logResampleToFov(kind, label, details) {
+    if (this.options.debugResampleToFov !== true) return;
+    console.log(`[resampleToFov] ${kind} ${label}`, details);
+  }
+
   async handleResampleToFov() {
     if (!this.pyodide || !this.nv.volumes?.length) return;
     try {
+      const debugResample = this.options.debugResampleToFov === true;
       this.resampleToFovBtn.disabled = true;
       const ref = this.generateFovMaskNifti();
       this.pyodide.globals.set("reference_bytes", ref);
+      if (debugResample) {
+        this._logResampleToFov("reference", "FoV mask", {
+          byteLength: ref?.byteLength,
+          magic344: this._niftiMagicAt344(ref),
+        });
+      }
 
       if (this.volumeGroups?.length > 0) {
         this.setStatus("Resampling multi-phantom...");
@@ -2320,17 +2393,63 @@ os.makedirs('/phantom/averaged', exist_ok=True)
           const defaultVisibleIdx = pdIdx >= 0 ? pdIdx : 0;
           for (let i = 0; i < group.volumes.length; i++) {
             const vol = group.volumes[i];
+            const volName = vol.name || "vol";
+            const hdr = vol.hdr ?? vol.header;
+            const dims = hdr?.dims ?? hdr?.dim ?? vol.dims ?? [];
+            const useSerial3DTo4D = (this.options.resampleSerial3D !== false && (dims[0] || 3) >= 4 && Number(dims[4] || 1) > 1);
+            const nFrames = useSerial3DTo4D
+              ? Number(dims[4] || 1)
+              : 1;
             const src = this.getVolumeNifti(vol);
+            if (debugResample) {
+              const img = vol.img;
+              const imgLen = img?.length ?? img?.byteLength ?? null;
+              this._logResampleToFov("source", `${volName}${useSerial3DTo4D ? " [serial3d->4d]" : ""}`, {
+                group: group.jsonName,
+                index: i,
+                dims: dims ? Array.from(dims) : null,
+                datatypeCode: hdr?.datatypeCode,
+                imgType: img?.constructor?.name,
+                imgLen,
+                srcByteLength: src?.byteLength,
+                srcMagic344: this._niftiMagicAt344(src),
+              });
+            }
             this.pyodide.globals.set("source_bytes", src);
-            let res = await this.pyodide.runPythonAsync(`run_resampling(source_bytes, reference_bytes)`);
-            const bytes = (res && res.toJs) ? res.toJs() : res; if (res?.destroy) res.destroy();
-            const url = URL.createObjectURL(new Blob([bytes]));
-            const name = vol.name || "vol";
-            const added = await this.nv.addVolumesFromUrl([{
-              url, name, colormap: "gray", opacity: i === defaultVisibleIdx ? 1.0 : 0
-            }]);
-            if (added?.length) newVolumes.push(added[0]);
-            setTimeout(() => URL.revokeObjectURL(url), 30000);
+            let res = await this.pyodide.runPythonAsync(
+              useSerial3DTo4D
+                ? `run_resampling_serial3d_to_4d(source_bytes, reference_bytes)`
+                : `run_resampling(source_bytes, reference_bytes)`
+            );
+              const resType = res?.constructor?.name;
+              const outPathRaw = (res && res.toJs) ? res.toJs() : res;
+              const outPath = String(outPathRaw);
+              if (outPathRaw?.destroy) outPathRaw.destroy();
+              if (res?.destroy) res.destroy();
+              const outU8 = this.pyodide.FS.readFile(outPath);
+              const outMagic = this._niftiMagicAt344(outU8);
+              if (debugResample) {
+                this._logResampleToFov("output", `${volName}${useSerial3DTo4D ? " [serial3d->4d]" : ""}`, {
+                  group: group.jsonName,
+                  resRawType: resType,
+                  outType: outU8?.constructor?.name,
+                  outPath,
+                  outByteLength: outU8?.byteLength,
+                  outMagic344: outMagic,
+                });
+              }
+              if (!outMagic.ok) {
+                throw new Error(`Resample output is not valid NIfTI for ${volName} (path: ${outPath})`);
+              }
+              const url = URL.createObjectURL(new Blob([outU8]));
+              const name = volName;
+              const visible = i === defaultVisibleIdx;
+              const added = await this.nv.addVolumesFromUrl([{
+                url, name, colormap: "gray", opacity: visible ? 1.0 : 0
+              }]);
+              if (added?.length) newVolumes.push(added[0]);
+              setTimeout(() => URL.revokeObjectURL(url), 30000);
+              try { this.pyodide.FS.unlink(outPath); } catch (_) {}
           }
           const groupId = "g-" + Math.random().toString(36).substr(2, 9);
           const folderName = group.jsonName + "_resampled";
@@ -2347,15 +2466,59 @@ os.makedirs('/phantom/averaged', exist_ok=True)
       } else {
         this.setStatus("Resampling...");
         const vol = this.nv.volumes[0];
+        const volName = vol.name || "vol";
+        const hdr = vol.hdr ?? vol.header;
+        const dims = hdr?.dims ?? hdr?.dim ?? vol.dims ?? [];
+        const useSerial3DTo4D = (this.options.resampleSerial3D !== false && (dims[0] || 3) >= 4 && Number(dims[4] || 1) > 1);
+        const nFrames = useSerial3DTo4D
+          ? Number(dims[4] || 1)
+          : 1;
         const src = this.getVolumeNifti(vol);
+        if (debugResample) {
+          const img = vol.img;
+          const imgLen = img?.length ?? img?.byteLength ?? null;
+          this._logResampleToFov("source", `${volName}${useSerial3DTo4D ? " [serial3d->4d]" : ""}`, {
+            dims: dims ? Array.from(dims) : null,
+            datatypeCode: hdr?.datatypeCode,
+            imgType: img?.constructor?.name,
+            imgLen,
+            srcByteLength: src?.byteLength,
+            srcMagic344: this._niftiMagicAt344(src),
+          });
+        }
         this.pyodide.globals.set("source_bytes", src);
-        let res = await this.pyodide.runPythonAsync(`run_resampling(source_bytes, reference_bytes)`);
-        const bytes = (res && res.toJs) ? res.toJs() : res; if (res?.destroy) res.destroy();
-        const url = URL.createObjectURL(new Blob([bytes]));
-        const name = (vol.name || "vol").replace(/\.nii(\.gz)?$/, "") + "_resampled.nii";
-        await this.nv.addVolumesFromUrl([{ url, name, colormap: "gray", opacity: 1.0 }]);
-        setTimeout(() => URL.revokeObjectURL(url), 30000);
-        this.setStatus(`✓ Resampled: ${name}`);
+        let res = await this.pyodide.runPythonAsync(
+          useSerial3DTo4D
+            ? `run_resampling_serial3d_to_4d(source_bytes, reference_bytes)`
+            : `run_resampling(source_bytes, reference_bytes)`
+        );
+          const resType = res?.constructor?.name;
+          const outPathRaw = (res && res.toJs) ? res.toJs() : res;
+          const outPath = String(outPathRaw);
+          if (outPathRaw?.destroy) outPathRaw.destroy();
+          if (res?.destroy) res.destroy();
+          const outU8 = this.pyodide.FS.readFile(outPath);
+          const outMagic = this._niftiMagicAt344(outU8);
+          if (debugResample) {
+            this._logResampleToFov("output", `${volName}${useSerial3DTo4D ? " [serial3d->4d]" : ""}`, {
+              resRawType: resType,
+              outType: outU8?.constructor?.name,
+              outPath,
+              outByteLength: outU8?.byteLength,
+              outMagic344: outMagic,
+            });
+          }
+          if (!outMagic.ok) {
+            throw new Error(`Resample output is not valid NIfTI for ${volName} (path: ${outPath})`);
+          }
+          const url = URL.createObjectURL(new Blob([outU8]));
+          const name = (vol.name || "vol").replace(/\.nii(\.gz)?$/, "") + "_resampled.nii";
+          const opacity = 1.0;
+          await this.nv.addVolumesFromUrl([{ url, name, colormap: "gray", opacity }]);
+          setTimeout(() => URL.revokeObjectURL(url), 30000);
+          try { this.pyodide.FS.unlink(outPath); } catch (_) {}
+        if (useSerial3DTo4D) this.setStatus(`✓ Resampled: ${volName} (${nFrames} frames merged to 4D)`);
+        else this.setStatus(`✓ Resampled: ${volName}`);
       }
       this.updateVolumeList();
       this.triggerHighlight();
