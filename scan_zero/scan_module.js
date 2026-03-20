@@ -48,14 +48,14 @@ export class ScanModule {
                     <h3 class="section-title" style="margin: 0;">RUN</h3>
                 </div>
                 <div class="scan-header" style="display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem;">
-                    <button id="btn-start-scan" class="scan-btn">
-                        <span class="icon">▶</span> SCAN
-                    </button>
-                    <button id="btn-start-sim-fast" class="scan-btn" title="Rapisim (tool-rapisim)">
-                        <span class="icon">🧪</span> SIM FAST
+                    <button id="btn-start-cut" class="scan-btn" title="Resample first volume to FOV (fake scan)">
+                        CUT
                     </button>
                     <button id="btn-start-sim-mr0" class="scan-btn" title="MR0 (tool-mr0sim)">
-                        <span class="icon">◎</span> SIM
+                        SCAN<span class="icon">▶</span> 
+                    </button>
+                    <button id="btn-start-sim-fast" class="scan-btn" title="Rapisim (tool-rapisim)">
+                         SCAN<span class="icon">▶▶</span>
                     </button>
                     <div class="active-info">
                         Ready: <span id="ready-seq-name">${this.currentSequence ? (this.currentSequence.displayName || this.currentSequence.name) : 'None'}</span>
@@ -67,9 +67,9 @@ export class ScanModule {
             </div>
         `;
 
-        this.container.querySelector('#btn-start-scan').onclick = () => this.startScan();
-        this.container.querySelector('#btn-start-sim-fast').onclick = () => this.startSimFast();
+        this.container.querySelector('#btn-start-cut').onclick = () => this.startScan();
         this.container.querySelector('#btn-start-sim-mr0').onclick = () => this.startSimMr0();
+        this.container.querySelector('#btn-start-sim-fast').onclick = () => this.startSimFast();
         
         // Make this instance available globally for UI callbacks if needed
         window.scanModule = this;
@@ -82,36 +82,28 @@ export class ScanModule {
     }
 
     async startScan() {
-        if (!this.currentSequence) {
-            alert("Please select a sequence in the Explorer first.");
+        // CUT = resample current viewer volume to FOV mask only (no seq execution / no .seq artifact)
+        const nvMod = window.nvModule;
+        if (!nvMod || !nvMod.nv?.volumes?.length) {
+            alert("No volume loaded in Niivue.");
             return;
         }
 
         this.scanCounter++;
         const now = new Date();
         const pad = (n) => String(n).padStart(2, '0');
-        const seqSafeName = ((this.currentSequence.displayName || this.currentSequence.name) || "Scan").replace(/\s+/g, '_');
-        const baseName = `scan_${this.scanCounter}_${seqSafeName}`;
-
-        // 1. Trigger sequence execution; snapshot saved as e.g. user/1_prot_gre.py (scan number + short name)
-        if (window.seqExplorer) {
-            try {
-                console.log("ScanModule: Triggering sequence execution (silent) with protocol save, scan", this.scanCounter);
-                const result = await window.seqExplorer.executeFunction(true, this.scanCounter);
-                console.log("ScanModule: Sequence execution result:", result);
-            } catch (e) {
-                console.error("Sequence execution failed before scan:", e);
-                alert("Failed to generate sequence. Check the console for errors.");
-                return;
-            }
-        }
+        const baseName = `scan_${this.scanCounter}_cut`;
+        const seqLabel = this.currentSequence
+            ? ((this.currentSequence.displayName || this.currentSequence.name) || "CUT")
+            : "CUT";
 
         const job = {
             id: 'job_' + now.getTime(),
             scanNumber: this.scanCounter,
             baseName: baseName,
-            name: (this.currentSequence.displayName || this.currentSequence.name) || "Untitled Scan",
-            protocol: "Standard Protocol",
+            name: seqLabel,
+            protocol: "CUT (FOV)",
+            cutOnly: true,
             status: 'pending',
             timestamp: `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`,
             niftiUrl: null,
@@ -167,10 +159,10 @@ export class ScanModule {
         }
         const job = this._enqueueSimJob({
             baseSuffix: 'simfast',
-            queueName: 'SIM FAST',
-            protocol: 'SIM FAST (rapisim)',
+            queueName: 'SCAN▶▶ ',
+            protocol: 'SIM▶▶ (rapisim)',
             simToolUrl: TOOL_RAPISIM,
-            simLogLabel: 'SIM FAST',
+            simLogLabel: 'SCAN ▶▶ ',
             noSignalName: 'Rapisim',
         });
         await this.runSimPipeline(job);
@@ -192,10 +184,10 @@ export class ScanModule {
         }
         const job = this._enqueueSimJob({
             baseSuffix: 'sim_mr0',
-            queueName: 'SIM',
-            protocol: 'SIM (MR0)',
+            queueName: 'SIM▶',
+            protocol: 'SIM▶ (MR0)',
             simToolUrl: TOOL_MR0SIM,
-            simLogLabel: 'SIM',
+            simLogLabel: 'SIM▶',
             noSignalName: 'MR0 sim',
         });
         await this.runSimPipeline(job);
@@ -243,85 +235,28 @@ export class ScanModule {
             // 3. Set bytes in Pyodide globals
             nvMod.pyodide.globals.set("source_bytes", srcBytes);
             nvMod.pyodide.globals.set("reference_bytes", refBytes);
-            
-            // 4. Run the resampling script that was already initialized in NiivueModule
-            let res = await nvMod.pyodide.runPythonAsync(`run_resampling(source_bytes, reference_bytes)`);
-            const niftiBytes = (res && res.toJs) ? res.toJs() : res;
-            if (res && res.destroy) res.destroy();
 
-            // 5. Save the actual .seq file to the virtual filesystem
-            // For seq_pulseq_interpreter, copy the original file instead of seq.write()
-            const isInterpreter = this.currentSequence && (this.currentSequence.functionName === 'seq_pulseq_interpreter');
-            let sourceSeqPath = null;
-            if (isInterpreter && window.seqExplorer) {
-                const paramsRoot = window.seqExplorer.paramsTarget || window.seqExplorer.container;
-                const input = paramsRoot ? paramsRoot.querySelector('#seq-param-seq_file') : null;
-                if (input && input.value && input.value.trim()) {
-                    sourceSeqPath = input.value.trim();
-                }
-            }
-            const sourceSeqPathPy = sourceSeqPath != null ? JSON.stringify(sourceSeqPath) : 'None';
+            await nvMod.initPyodide();
+            // 4) run_resampling* returns a VFS path string, not raw bytes — read file (same as SIM / Resample to FOV)
+            const v0 = nvMod.nv.volumes[0];
+            const hdr = v0.hdr ?? v0.header;
+            const dims = hdr?.dims ?? hdr?.dim ?? v0.dims ?? [];
+            const useSerial3DTo4D = (nvMod.options.resampleSerial3D !== false && (dims[0] || 3) >= 4 && Number(dims[4] || 1) > 1);
+            let res = await nvMod.pyodide.runPythonAsync(
+                useSerial3DTo4D
+                    ? `run_resampling_serial3d_to_4d(source_bytes, reference_bytes)`
+                    : `run_resampling(source_bytes, reference_bytes)`
+            );
+            const outPathRaw = (res && res.toJs) ? res.toJs() : res;
+            const outPath = String(outPathRaw);
+            if (outPathRaw?.destroy) outPathRaw.destroy();
+            if (res?.destroy) res.destroy();
+            const niftiBytes = nvMod.pyodide.FS.readFile(outPath);
+            try { nvMod.pyodide.FS.unlink(outPath); } catch (_) {}
 
-            const saveResult = await nvMod.pyodide.runPythonAsync(`
-import os
-import sys
-import shutil
-import __main__
-from seq_source_manager import SourceManager
-
-# Ensure output directory exists in the root of the virtual filesystem
-if not os.path.exists('/outputs'):
-    os.makedirs('/outputs')
-
-vfs_path = os.path.join('/outputs', '${job.baseName}.seq')
-source_seq_path = ${sourceSeqPathPy}
-
-_final_status = "no_sequence"
-if source_seq_path is not None and os.path.exists(source_seq_path):
-    try:
-        shutil.copy2(source_seq_path, vfs_path)
-        print(f"Copied .seq file to {vfs_path}")
-        _final_status = "success"
-    except Exception as e:
-        print(f"Error copying .seq file: {e}")
-        _final_status = f"error: {e}"
-else:
-    seq = getattr(SourceManager, '_last_sequence', None)
-    if not seq and hasattr(__main__, 'seq'):
-        seq = __main__.seq
-    if seq:
-        try:
-            seq.write(vfs_path)
-            print(f"Successfully saved sequence to {vfs_path}")
-            _final_status = "success"
-        except Exception as e:
-            print(f"Error writing .seq file: {e}")
-            _final_status = f"error: {e}"
-    else:
-        print("Warning: No sequence object found in memory to save.")
-
-_final_status
-            `);
-            
-            console.log("ScanModule: Python save result:", saveResult);
-            
-            if (saveResult === "success") {
-                job.vfsSeqPath = `/outputs/${job.baseName}.seq`;
-            } else {
-                console.warn("ScanModule: Could not save .seq file. Python returned:", saveResult);
-                // We'll still allow the scan to finish, but VIEW SEQ will be limited
-            }
-
-            // 6. Create URLs for the results
             job.niftiUrl = URL.createObjectURL(new Blob([niftiBytes], {type: "application/octet-stream"}));
-            
-            // Create a fake .seq file for the "File-Pair" logic
-            const seqContent = `# Pulseq file for ${job.name}\n# Based on ${this.currentSequence.fileName || 'unknown'}\n# FOV Parameters: ${JSON.stringify(this.currentFov || {})}`;
-            job.seqUrl = URL.createObjectURL(new Blob([seqContent], {type: "text/plain"}));
 
             job.status = 'done';
-            
-            // 7. Auto-trigger VIEW SCAN after scan is complete
             this.loadJob(job.id);
             
         } catch (e) {
@@ -784,10 +719,21 @@ signal = np.array([complex(float(r), float(i)) for r,i in raw], dtype=np.complex
 ref_bytes = sim_ref_bytes.to_py() if hasattr(sim_ref_bytes, 'to_py') else sim_ref_bytes
 ref_fh = nib.FileHolder(fileobj=io.BytesIO(ref_bytes))
 ref_img = nib.Nifti1Image.from_file_map({'header': ref_fh, 'image': ref_fh})
-nx, ny = int(ref_img.shape[0]), int(ref_img.shape[1])
-zooms = ref_img.header.get_zooms()[:2]
-dx_mm = float(zooms[0]) if zooms[0] and float(zooms[0]) > 0 else 1.0
-dy_mm = float(zooms[1]) if len(zooms) > 1 and float(zooms[1]) > 0 else dx_mm
+# Full 3D FOV grid (same as generateFovMaskNifti): recon lives in 3D NIfTI so Niivue + FOV sync see nz>=1.
+# 2D readout today: fill one slice (center); future 3D sequences: replace mag3d with full volume from recon.
+shp = tuple(int(x) for x in ref_img.shape)
+if len(shp) == 2:
+    nx, ny, nz_ref = shp[0], shp[1], 1
+elif len(shp) >= 3:
+    nx, ny, nz_ref = shp[0], shp[1], max(1, shp[2])
+else:
+    nx, ny, nz_ref = int(ref_img.shape[0]), int(ref_img.shape[1]), 1
+zooms_full = list(ref_img.header.get_zooms())
+while len(zooms_full) < 3:
+    zooms_full.append(zooms_full[-1] if zooms_full else 1.0)
+dx_mm = float(zooms_full[0]) if zooms_full[0] and float(zooms_full[0]) > 0 else 1.0
+dy_mm = float(zooms_full[1]) if len(zooms_full) > 1 and zooms_full[1] and float(zooms_full[1]) > 0 else dx_mm
+dz_mm = float(zooms_full[2]) if len(zooms_full) > 2 and zooms_full[2] and float(zooms_full[2]) > 0 else 1.0
 dx_m = dx_mm * 1e-3
 dy_m = dy_mm * 1e-3
 om = None
@@ -817,15 +763,20 @@ n = min(signal.size, om.shape[0]); signal = signal[:n]; om = om[:n]
 A = NUFFT(); A.plan(om, (nx, ny), (2*nx, 2*ny), (8, 8))
 reco = A.adjoint(signal).reshape(nx, ny)
 mag = np.abs(reco).astype(np.float32)
-mag3d = mag[:, :, np.newaxis]
+mag3d = np.zeros((nx, ny, nz_ref), dtype=np.float32)
+z_sl = (nz_ref - 1) // 2
+mag3d[:, :, z_sl] = mag
 # Flip voxel data on all axes for display alignment; affine unchanged (same world↔index as ref mask).
 mag3d = np.ascontiguousarray(np.flip(mag3d, axis=(0, 1, 2)))
 # Compensate ~1-voxel shift (NUFFT / grid centering vs NIfTI voxel centers): roll +1 along each dim.
 for _ax in (0, 1, 2):
     mag3d = np.roll(mag3d, 1, axis=_ax)
 mag3d = np.ascontiguousarray(mag3d)
-out = nib.Nifti1Image(mag3d, ref_img.affine, header=ref_img.header.copy())
-out.set_sform(ref_img.affine, code=2); out.set_qform(ref_img.affine, code=2)
+# Fresh header from array shape + mask zooms (avoids 2D / nz=0 dim[] from stale header.copy()).
+out = nib.Nifti1Image(np.asarray(mag3d, dtype=np.float32), ref_img.affine)
+out.header.set_zooms((dx_mm, dy_mm, dz_mm))
+out.set_sform(ref_img.affine, code=2)
+out.set_qform(ref_img.affine, code=2)
 out_path = '/tmp/__sim_pipeline_reco.nii'
 nib.save(out, out_path)
 out_path
@@ -871,10 +822,10 @@ out_path
                     ${job.status === 'done' ? `
                         <div class="action-row">
                             <button class="view-btn">VIEW SCAN</button>
-                            <button class="view-seq-btn">VIEW SEQ</button>
+                            ${job.cutOnly ? '' : '<button class="view-seq-btn">VIEW SEQ</button>'}
                         </div>
                         <div class="action-row small-btns">
-                            <button class="dl-seq-btn" title="Download .seq file"><i class="bi bi-download" aria-hidden="true"></i></button>
+                            ${job.cutOnly ? '' : '<button class="dl-seq-btn" title="Download .seq file"><i class="bi bi-download" aria-hidden="true"></i></button>'}
                             <button class="remove-job-btn" title="Remove scan"><i class="bi bi-x-lg" aria-hidden="true"></i></button>
                         </div>
                     ` : ''}
@@ -1024,6 +975,11 @@ data
                 // 6. Update preview (will show selected volume if it's checked)
                 if (typeof nvMod.updatePreviewFromSelection === 'function') {
                     nvMod.updatePreviewFromSelection();
+                }
+
+                // Match volume-list scan click: FOV box from this scan's NIfTI (CUT + SIM)
+                if (typeof nvMod.syncFovFromScanVolume === 'function') {
+                    nvMod.syncFovFromScanVolume(targetVol);
                 }
             }
         }

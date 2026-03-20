@@ -61,10 +61,10 @@ A live debug info panel (in the FOV tab hint area) shows:
   - `triggerHighlight()`: Triggers the green visual feedback animation.
   - `updateVolumeList()`: Rebuilds the synchronized management UI.
 
-## SIM FAST / SIM (`scan_zero/scan_module.js`)
-- **Buttons**: **SIM FAST** → `wss://tool-rapisim.fly.dev/tool` (same `Dict` payload as before: `sequence` + `phantom`). **SIM** → `wss://tool-mr0sim.fly.dev/tool` (identical call shape). Shared implementation: `runSimPipeline(job)` with `job.simToolUrl` set per queue entry (`TOOL_RAPISIM` / `TOOL_MR0SIM` exported from the module).
+## RUN bar: CUT / > SIM / >> SIM (`scan_zero/scan_module.js`)
+- **Buttons**: **CUT** — resample first viewer volume to the FOV mask only (`runFakeScan`): no `executeFunction`, no `.seq` on disk/VFS, queue shows **VIEW SCAN** only (no VIEW SEQ / download). **> SIM** (left) → `wss://tool-mr0sim.fly.dev/tool`. **>> SIM** (right) → `wss://tool-rapisim.fly.dev/tool`. Same `Dict` payload: `sequence` + `phantom`. Shared implementation: `runSimPipeline(job)` with `job.simToolUrl` (`TOOL_MR0SIM` / `TOOL_RAPISIM` exported from the module).
 - **FOV contract**: The Pulseq `.seq` should match the **viewer FOV tab** (mm box, rotation, mask X/Y/Z). Recon grid comes from `generateFovMaskNifti()`, not `seq.definitions`. Trajex k (1/m): **kmax = N/(2·FOV)** per axis; PyNUFFT **ω = (k/kmax)·π**.
-- **Flow**: Resample maps to FOV **in memory / `/tmp/__sim_phantom_staging` only** (no extra Niivue volumes, no long-lived `/phantom` copies for resampled maps) → conseq / trajex → chosen sim tool → PyNUFFT → one magnitude NIfTI. **SCAN** (fake scan) only resamples the first viewer volume for the queue; it does not run this pipeline.
+- **Flow**: Resample maps to FOV **in memory / `/tmp/__sim_phantom_staging` only** (no extra Niivue volumes, no long-lived `/phantom` copies for resampled maps) → conseq / trajex → chosen sim tool → PyNUFFT → magnitude NIfTI saved as **3D** `(nx, ny, nz)` on the **same grid as the FOV mask** (`generateFovMaskNifti`): 2D readout fills one slice (`z = (nz-1)//2`); future 3D recon can assign the full `mag3d`. Output uses a **fresh** NIfTI header from the array + mask voxel sizes (`set_zooms`), not a blind `header.copy()`, so `dim[]`/`nz` stay consistent for Niivue and `syncFovFromScanVolume`. **CUT** only resamples the first viewer volume for the queue; it does not run this pipeline.
 
 ## Phantom JSON Execution (viewer)
 - **JSON tab** (only when using `viewer.html`): Lists JSON phantom config filenames from the current session; selecting one shows its content in a CodeMirror editor. Buttons: **Save** / **Save As** / **Revert** (in VFS), **Execute** (runs phantom and loads result into the viewer).

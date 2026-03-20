@@ -2039,6 +2039,87 @@ os.makedirs('/phantom/averaged', exist_ok=True)
     return { vol, hdr, dim3, affine };
   }
 
+  /**
+   * Reference volume for mapping a scan NIfTI's bounding box into FOV slider space.
+   * Prefer first non-scan (phantom) so SIM/CUT outputs align with planning grid; else volumes[0].
+   */
+  getReferenceVolumeInfoForFovSync() {
+    const list = this.nv?.volumes;
+    if (!list?.length) return null;
+    const vol = list.find((v) => !(v.name && v.name.startsWith("scan_"))) ?? list[0];
+    const hdr = vol?.hdr ?? vol?.header ?? null;
+    const dimRaw = hdr?.dims ?? hdr?.dim ?? vol?.dims ?? vol?.dim ?? null;
+    let dim3 = null;
+    if (Array.isArray(dimRaw)) {
+      if (dimRaw.length >= 4) dim3 = [dimRaw[1], dimRaw[2], dimRaw[3]];
+      else if (dimRaw.length === 3) dim3 = [dimRaw[0], dimRaw[1], dimRaw[2]];
+    }
+    let affine = hdr?.affine ?? vol?.affine ?? vol?.matRAS ?? vol?.mat?.affine ?? null;
+    if (Array.isArray(affine) && affine.length < 16 && Array.isArray(affine[0])) {
+      affine = [
+        affine[0][0], affine[0][1], affine[0][2], affine[0][3],
+        affine[1][0], affine[1][1], affine[1][2], affine[1][3],
+        affine[2][0], affine[2][1], affine[2][2], affine[2][3],
+        affine[3][0], affine[3][1], affine[3][2], affine[3][3],
+      ];
+    }
+    return { vol, hdr, dim3, affine };
+  }
+
+  /**
+   * Set FOV sliders + mesh from a queue scan volume's qform/sform (same as clicking the scan row).
+   * Call when selecting a scan from the queue so VIEW SCAN matches volume-list behavior.
+   */
+  syncFovFromScanVolume(vol) {
+    if (!vol?.name?.startsWith("scan_")) return;
+    const ref = this.getReferenceVolumeInfoForFovSync();
+    if (!ref?.vol || !ref?.dim3 || !ref?.affine) return;
+
+    this.voxelSpacingMm = this.estimateVoxelSpacingMm(ref);
+
+    const scanHdr = vol?.hdr ?? vol?.header ?? null;
+    const scanAffine = scanHdr?.affine ?? vol?.affine ?? vol?.matRAS ?? null;
+    const scanDimRaw = scanHdr?.dims ?? scanHdr?.dim ?? vol?.dims ?? vol?.dim ?? null;
+    let scanDims = null;
+    if (Array.isArray(scanDimRaw)) {
+      if (scanDimRaw.length >= 4) scanDims = [scanDimRaw[1], scanDimRaw[2], scanDimRaw[3]];
+      else if (scanDimRaw.length === 3) scanDims = scanDimRaw;
+    }
+    if (!scanAffine || !scanDims) return;
+    // Niivue / NIfTI often use nz=0 for "2D" volumes; FOV box math needs a true 3D extent (singleton z=1).
+    {
+      const nx = Math.max(1, Math.floor(Number(scanDims[0])) || 1);
+      const ny = Math.max(1, Math.floor(Number(scanDims[1])) || 1);
+      let nz = Math.floor(Number(scanDims[2]));
+      if (!Number.isFinite(nz) || nz < 1) nz = 1;
+      scanDims = [nx, ny, nz];
+    }
+
+    const flat = (a) =>
+      Array.isArray(a) && a.length < 16 && Array.isArray(a[0])
+        ? [
+            a[0][0], a[0][1], a[0][2], a[0][3],
+            a[1][0], a[1][1], a[1][2], a[1][3],
+            a[2][0], a[2][1], a[2][2], a[2][3],
+            a[3][0], a[3][1], a[3][2], a[3][3],
+          ]
+        : a;
+    const params = this.affineToFovParams(flat(scanAffine), scanDims, ref.affine, ref.dim3, this.voxelSpacingMm);
+    if (params && this.fovX && this.fovOffX && this.fovRotX) {
+      this.fovX.value = String(Math.round(params.sizeMm[0]));
+      this.fovY.value = String(Math.round(params.sizeMm[1]));
+      this.fovZ.value = String(Math.round(params.sizeMm[2]));
+      this.fovOffX.value = String(Number(params.offsetMm[0]).toFixed(1));
+      this.fovOffY.value = String(Number(params.offsetMm[1]).toFixed(1));
+      this.fovOffZ.value = String(Number(params.offsetMm[2]).toFixed(1));
+      this.fovRotX.value = String(Math.round(params.rotationDeg[0]));
+      this.fovRotY.value = String(Math.round(params.rotationDeg[1]));
+      this.fovRotZ.value = String(Math.round(params.rotationDeg[2]));
+      if (this.showFov) this.showFov.checked = true;
+      this.rebuildFovLive(true);
+    }
+  }
+
   /** Volume and dim3 to use for crosshair intensity: selected volume, or first visible, or [0]. */
   getVolumeForIntensity() {
     const list = this.nv?.volumes;
@@ -2284,7 +2365,7 @@ os.makedirs('/phantom/averaged', exist_ok=True)
     numInput.addEventListener("input", () => { if (numInput.value !== "") { slider.value = numInput.value; if (callback) callback(); } });
   }
 
-  /** Binary mask NIfTI for the current FOV box + mask grid. SIM FAST / SIM / resample assume the Pulseq file uses the same FOV (mm) and encoding grid as this geometry. */
+  /** Binary mask NIfTI for the current FOV box + mask grid. CUT / > SIM / >> SIM pipelines assume the Pulseq file uses the same FOV (mm) and encoding grid as this geometry. */
   generateFovMaskNifti() {
     const geometry = this.getFovGeometry();
     const fovCenterWorld = geometry.centerWorld, fovSizeMm = geometry.sizeMm, fovRotDeg = geometry.rotationDeg;
@@ -2716,30 +2797,7 @@ os.makedirs('/phantom/averaged', exist_ok=True)
           this.updateVolumeList();
           this.updatePreviewFromSelection();
           if (this.selectedVolume === vol) {
-            const ref = this.getVolumeInfo();
-            if (ref?.vol && ref?.dim3 && ref?.affine) {
-              const scanHdr = vol?.hdr ?? vol?.header ?? null;
-              const scanAffine = scanHdr?.affine ?? vol?.affine ?? vol?.matRAS ?? null;
-              const scanDimRaw = scanHdr?.dims ?? scanHdr?.dim ?? vol?.dims ?? vol?.dim ?? null;
-              let scanDims = null;
-              if (Array.isArray(scanDimRaw)) {
-                if (scanDimRaw.length >= 4) scanDims = [scanDimRaw[1], scanDimRaw[2], scanDimRaw[3]];
-                else if (scanDimRaw.length === 3) scanDims = scanDimRaw;
-              }
-              if (scanAffine && scanDims) {
-                const flat = (a) => Array.isArray(a) && a.length < 16 && Array.isArray(a[0])
-                  ? [a[0][0],a[0][1],a[0][2],a[0][3], a[1][0],a[1][1],a[1][2],a[1][3], a[2][0],a[2][1],a[2][2],a[2][3], a[3][0],a[3][1],a[3][2],a[3][3]]
-                  : a;
-                const params = this.affineToFovParams(flat(scanAffine), scanDims, ref.affine, ref.dim3, this.voxelSpacingMm);
-                if (params && this.fovX && this.fovOffX && this.fovRotX) {
-                  this.fovX.value = String(Math.round(params.sizeMm[0])); this.fovY.value = String(Math.round(params.sizeMm[1])); this.fovZ.value = String(Math.round(params.sizeMm[2]));
-                  this.fovOffX.value = String(Number(params.offsetMm[0]).toFixed(1)); this.fovOffY.value = String(Number(params.offsetMm[1]).toFixed(1)); this.fovOffZ.value = String(Number(params.offsetMm[2]).toFixed(1));
-                  this.fovRotX.value = String(Math.round(params.rotationDeg[0])); this.fovRotY.value = String(Math.round(params.rotationDeg[1])); this.fovRotZ.value = String(Math.round(params.rotationDeg[2]));
-                  if (this.showFov) this.showFov.checked = true;
-                  this.rebuildFovLive(true);
-                }
-              }
-            }
+            this.syncFovFromScanVolume(vol);
           }
         };
       }
@@ -2979,12 +3037,13 @@ os.makedirs('/phantom/averaged', exist_ok=True)
       }
       this.updateVolumeList(); 
       
-      // If a scan was loaded, select it and update preview
+      // If a scan was loaded, select it and sync FOV from its header (also when importing scan_*.nii)
       if (isScan) {
           const loadedVol = this.nv.volumes.find(v => v.name === (name??"vol"));
           if (loadedVol) {
               this.selectedVolume = loadedVol;
               this.updateVolumeList(); // Re-render to show selection
+              this.syncFovFromScanVolume(loadedVol);
           }
       }
       

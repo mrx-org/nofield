@@ -26,7 +26,7 @@
     border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.12));
 }
 
-/* Multiple RUN buttons in one row (SCAN / SIM FAST / SIM); avoid global .scan-btn width:100% here */
+/* Multiple RUN buttons in one row (CUT / > SIM / >> SIM); avoid global .scan-btn width:100% here */
 .scan-header .scan-btn {
     width: auto;
     flex: 1 1 0;
