@@ -481,6 +481,16 @@
     color: var(--accent);
 }
 
+.app-version {
+    margin-left: 0.45rem;
+    font-size: 0.65rem;
+    font-weight: 500;
+    color: var(--muted);
+    letter-spacing: 0.03em;
+    opacity: 0.9;
+    vertical-align: 0.15em;
+}
+
 .credits-btn {
     width: 28px;
     height: 28px;

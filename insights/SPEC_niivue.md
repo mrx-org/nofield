@@ -1,5 +1,7 @@
 # Niivue Component Specification
 
+**Released with lab shell:** `v0.1.0` (see root `README.md` and `index.html` header).
+
 ## Intent
 Modular medical imaging component for 3D/orthographic NIfTI visualization and interactive scanner Field of View (FOV) planning.
 

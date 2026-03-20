@@ -1,4 +1,7 @@
 # Niivue minimal app (zero-install)
+
+**Version:** `v0.1.0`
+
 This is a **minimal Niivue viewer** implemented as a single `viewer.html` file.
 
 ## Run (recommended)
