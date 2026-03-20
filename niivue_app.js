@@ -1042,7 +1042,10 @@ export class NiivueModule {
             while (deltaRad > Math.PI) deltaRad -= 2 * Math.PI;
             
             let deltaDeg = deltaRad * (180 / Math.PI);
-            let finalRot = this.dragStartRotation - deltaDeg;
+            // Touch: coronal pane needs opposite twist sense vs mouse (Ctrl+right uses getMouseAngle convention).
+            const pane = this.fovRotateAxCorSag;
+            const rotSign = pane === 1 ? 1 : -1;
+            let finalRot = this.dragStartRotation + rotSign * deltaDeg;
             
             // Normalize rotation to -180 to 180
             const norm = (v) => {
@@ -1052,7 +1055,6 @@ export class NiivueModule {
                 return n;
             };
             
-            const pane = this.fovRotateAxCorSag;
             if (pane === 0) this.fovRotZ.value = String(norm(finalRot).toFixed(1));
             else if (pane === 1) this.fovRotY.value = String(norm(finalRot).toFixed(1));
             else this.fovRotX.value = String(norm(finalRot).toFixed(1));
