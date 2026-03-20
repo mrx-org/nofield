@@ -715,8 +715,8 @@ export class NiivueModule {
             <div class="sliderRow">
               <div>Mask Z</div>
               <div class="input-sync">
-                <input id="maskZVal-${this.instanceId}" type="number" class="num-input" step="1" value="128" />
-                <input id="maskZ-${this.instanceId}" type="range" min="1" max="512" step="1" value="128" />
+                <input id="maskZVal-${this.instanceId}" type="number" class="num-input" step="1" value="3" />
+                <input id="maskZ-${this.instanceId}" type="range" min="1" max="512" step="1" value="3" />
               </div>
             </div>
           </div>
@@ -1130,6 +1130,8 @@ import numpy as np
 import nibabel as nib
 from scipy.ndimage import map_coordinates
 import io
+import os
+import gc
 
 def resample_to_reference(source_img, reference_img, order=3):
     source_data = source_img.get_fdata(dtype=np.float32)
@@ -1191,8 +1193,11 @@ def resample_to_reference(source_img, reference_img, order=3):
     return resampled_img
 
 def run_resampling(source_bytes, reference_bytes):
-    source_bytes = source_bytes.to_py()
-    reference_bytes = reference_bytes.to_py()
+    # Allow callers that already converted JS buffers (e.g. serial 4D helper).
+    if hasattr(source_bytes, 'to_py'):
+        source_bytes = source_bytes.to_py()
+    if hasattr(reference_bytes, 'to_py'):
+        reference_bytes = reference_bytes.to_py()
     source_fh = nib.FileHolder(fileobj=io.BytesIO(source_bytes))
     source_img = nib.Nifti1Image.from_file_map({'header': source_fh, 'image': source_fh})
     ref_fh = nib.FileHolder(fileobj=io.BytesIO(reference_bytes))
@@ -1205,35 +1210,77 @@ def run_resampling(source_bytes, reference_bytes):
     return out_path
 
 def run_resampling_serial3d_to_4d(source_bytes, reference_bytes):
-    source_bytes = source_bytes.to_py()
-    reference_bytes = reference_bytes.to_py()
-    source_fh = nib.FileHolder(fileobj=io.BytesIO(source_bytes))
-    source_img = nib.Nifti1Image.from_file_map({'header': source_fh, 'image': source_fh})
+    """4D path with lower peak RAM: no full-volume float32 copy, no list+stack of frames.
+    Spills source to /tmp so raw .nii can use mmap; gzip still benefits from pre-allocated output."""
+    if hasattr(source_bytes, 'to_py'):
+        source_bytes = source_bytes.to_py()
+    if hasattr(reference_bytes, 'to_py'):
+        reference_bytes = reference_bytes.to_py()
     ref_fh = nib.FileHolder(fileobj=io.BytesIO(reference_bytes))
     ref_img = nib.Nifti1Image.from_file_map({'header': ref_fh, 'image': ref_fh})
 
-    source_data = source_img.get_fdata(dtype=np.float32)
-    if source_data.ndim < 4 or source_data.shape[3] <= 1:
-        return run_resampling(source_bytes, reference_bytes)
+    raw = bytes(source_bytes)
+    is_gz = len(raw) > 2 and raw[0] == 0x1F and raw[1] == 0x8B
+    spill = '/tmp/__rs_4d_src.nii.gz' if is_gz else '/tmp/__rs_4d_src.nii'
+    with open(spill, 'wb') as f:
+        f.write(raw)
+    del raw
+    gc.collect()
 
-    frames = source_data.shape[3]
-    resampled_frames = []
-    frame_header = source_img.header.copy()
-    for t in range(frames):
-        frame_data = source_data[..., t]
-        frame_img = nib.Nifti1Image(frame_data, source_img.affine, header=frame_header)
-        frame_img.set_sform(source_img.get_sform(), code=int(source_img.header['sform_code']))
-        frame_img.set_qform(source_img.get_qform(), code=int(source_img.header['qform_code']))
-        resampled_frame = resample_to_reference(frame_img, ref_img, order=1)
-        resampled_frames.append(resampled_frame.get_fdata(dtype=np.float32))
+    mmap_mode = None if is_gz else 'r'
+    try:
+        try:
+            source_img = nib.load(spill, mmap_mode=mmap_mode)
+        except (TypeError, ValueError, AttributeError):
+            source_img = nib.load(spill)
+        sh = source_img.shape
+        if len(sh) < 4 or int(sh[3]) <= 1:
+            del source_img
+            gc.collect()
+            with open(spill, 'rb') as f:
+                flat = f.read()
+            return run_resampling(flat, reference_bytes)
 
-    out_data = np.stack(resampled_frames, axis=3)
-    out_header = source_img.header.copy()
+        frames = int(sh[3])
+        src_zooms = list(source_img.header.get_zooms())
+        frame_header = source_img.header.copy()
+
+        frame_data = np.asarray(source_img.dataobj[..., 0], dtype=np.float32)
+        frame_img0 = nib.Nifti1Image(frame_data, source_img.affine, header=frame_header)
+        frame_img0.set_sform(source_img.get_sform(), code=int(source_img.header['sform_code']))
+        frame_img0.set_qform(source_img.get_qform(), code=int(source_img.header['qform_code']))
+        res0 = resample_to_reference(frame_img0, ref_img, order=1)
+        r0 = res0.get_fdata(dtype=np.float32)
+        out_shape = r0.shape[:3]
+        out_data = np.empty(out_shape + (frames,), dtype=np.float32)
+        out_data[..., 0] = r0
+        del frame_data, frame_img0, res0, r0
+        gc.collect()
+
+        for t in range(1, frames):
+            frame_data = np.asarray(source_img.dataobj[..., t], dtype=np.float32)
+            frame_img = nib.Nifti1Image(frame_data, source_img.affine, header=frame_header)
+            frame_img.set_sform(source_img.get_sform(), code=int(source_img.header['sform_code']))
+            frame_img.set_qform(source_img.get_qform(), code=int(source_img.header['qform_code']))
+            resampled_frame = resample_to_reference(frame_img, ref_img, order=1)
+            out_data[..., t] = resampled_frame.get_fdata(dtype=np.float32)
+            del frame_data, frame_img, resampled_frame
+            if (t & 0x3) == 0:
+                gc.collect()
+
+        del source_img
+        gc.collect()
+    finally:
+        try:
+            os.unlink(spill)
+        except OSError:
+            pass
+
+    out_header = frame_header.copy()
     out_img = nib.Nifti1Image(out_data, ref_img.affine, header=out_header)
     out_img.set_sform(ref_img.affine, code=2)
     out_img.set_qform(ref_img.affine, code=2)
     ref_zooms = ref_img.header.get_zooms()[:3]
-    src_zooms = source_img.header.get_zooms()
     dt = src_zooms[3] if len(src_zooms) > 3 else 1.0
     out_img.header.set_zooms((ref_zooms[0], ref_zooms[1], ref_zooms[2], dt))
     out_path = '/tmp/__resampled_tmp.nii'
@@ -2237,6 +2284,7 @@ os.makedirs('/phantom/averaged', exist_ok=True)
     numInput.addEventListener("input", () => { if (numInput.value !== "") { slider.value = numInput.value; if (callback) callback(); } });
   }
 
+  /** Binary mask NIfTI for the current FOV box + mask grid. SIM FAST / SIM / resample assume the Pulseq file uses the same FOV (mm) and encoding grid as this geometry. */
   generateFovMaskNifti() {
     const geometry = this.getFovGeometry();
     const fovCenterWorld = geometry.centerWorld, fovSizeMm = geometry.sizeMm, fovRotDeg = geometry.rotationDeg;

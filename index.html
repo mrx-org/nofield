@@ -462,8 +462,9 @@
                     });
                     await py.loadPackage(['numpy', 'scipy', 'micropip']);
                     const micropip = py.pyimport("micropip");
+                    // Pin pypulseq: conseq rejects Pulseq file format 1.5.x; 1.4.2.post2 writes an older version line.
                     await Promise.all([
-                        micropip.install('pypulseq'),
+                        micropip.install('pypulseq==1.4.2.post2'),
                         micropip.install('nibabel')
                     ]);
                     return py;

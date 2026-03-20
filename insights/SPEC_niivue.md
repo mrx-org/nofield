@@ -36,7 +36,7 @@ Loading a new phantom (Load Demo, Add Folder, or file-with-JSON) triggers a full
 - **Download FOV + NIfTI**: Exports RAS and LPS STL meshes of the FOV box, a binary FOV mask NIfTI (with rotated affine matching the FOV orientation), and the current primary volume as NIfTI. Both sform and qform are set identically (code=2).
 - **Resample to FOV**: Uses Pyodide (SciPy `map_coordinates` + nibabel) to resample current volume(s) onto the FOV mask grid. Supports multi-phantom groups (resamples each volume in the group). Results are added to the volume list.
 - **Robust output path**: Python writes a temporary `.nii` in Pyodide VFS; JS reads it via `pyodide.FS.readFile(...)`, validates NIfTI magic, then loads into Niivue.
-- **4D handling**: For 4D inputs, serial 3D frame resampling is used internally (default), then frames are stacked back into one 4D NIfTI to preserve structure.
+- **4D handling**: Serial 3D→4D resampling spills the source to `/tmp` (raw `.nii` uses mmap), pulls **one time frame at a time** via `dataobj[..., t]`, and writes into a **pre-allocated** 4D array (avoids a full-volume `get_fdata()` plus a list of all resampled frames before `np.stack`). Peak RAM is lower in Pyodide; gzip sources may still fully decompress. Huge FOV × many dynamics can still hit browser `MemoryError`.
 - **Cleanup & diagnostics**: Temporary VFS files are deleted after read (`FS.unlink`). Verbose resample logs are opt-in via `debugResampleToFov`; serial mode can be disabled with `resampleSerial3D: false`.
 
 ## Debug Panel
@@ -60,6 +60,11 @@ A live debug info panel (in the FOV tab hint area) shows:
   - `generateFovMaskNifti()`: Creates a binary NIfTI mask matching the current FOV box.
   - `triggerHighlight()`: Triggers the green visual feedback animation.
   - `updateVolumeList()`: Rebuilds the synchronized management UI.
+
+## SIM FAST / SIM (`scan_zero/scan_module.js`)
+- **Buttons**: **SIM FAST** → `wss://tool-rapisim.fly.dev/tool` (same `Dict` payload as before: `sequence` + `phantom`). **SIM** → `wss://tool-mr0sim.fly.dev/tool` (identical call shape). Shared implementation: `runSimPipeline(job)` with `job.simToolUrl` set per queue entry (`TOOL_RAPISIM` / `TOOL_MR0SIM` exported from the module).
+- **FOV contract**: The Pulseq `.seq` should match the **viewer FOV tab** (mm box, rotation, mask X/Y/Z). Recon grid comes from `generateFovMaskNifti()`, not `seq.definitions`. Trajex k (1/m): **kmax = N/(2·FOV)** per axis; PyNUFFT **ω = (k/kmax)·π**.
+- **Flow**: Resample maps to FOV **in memory / `/tmp/__sim_phantom_staging` only** (no extra Niivue volumes, no long-lived `/phantom` copies for resampled maps) → conseq / trajex → chosen sim tool → PyNUFFT → one magnitude NIfTI. **SCAN** (fake scan) only resamples the first viewer volume for the queue; it does not run this pipeline.
 
 ## Phantom JSON Execution (viewer)
 - **JSON tab** (only when using `viewer.html`): Lists JSON phantom config filenames from the current session; selecting one shows its content in a CodeMirror editor. Buttons: **Save** / **Save As** / **Revert** (in VFS), **Execute** (runs phantom and loads result into the viewer).
