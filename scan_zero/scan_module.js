@@ -242,7 +242,7 @@ export class ScanModule {
             const srcBytes = nvMod.getVolumeNifti(nvMod.nv.volumes[0]);
             
             // 2. Generate target FOV mask as NIfTI bytes
-            const refBytes = nvMod.generateFovMaskNifti();
+            const refBytes = nvMod.generateFovMaskNifti(nvMod.getPhantomMatrixDims());
 
             // 3. Set bytes in Pyodide globals
             nvMod.pyodide.globals.set("source_bytes", srcBytes);
@@ -688,8 +688,8 @@ if os.path.exists(_p):
 
             // 2) Ref mask / grid from viewer (now includes seq FOV mm on sliders)
             const resampledEntries = [];
-            const ref = nvMod.generateFovMaskNifti();
-            nvMod.pyodide.globals.set("reference_bytes", ref);
+            const phantomRef = nvMod.generateFovMaskNifti(nvMod.getPhantomMatrixDims());
+            nvMod.pyodide.globals.set("reference_bytes", phantomRef);
             for (const vol of activeGroup.volumes) {
                 const hdr = vol.hdr ?? vol.header;
                 const dims = hdr?.dims ?? hdr?.dim ?? vol.dims ?? [];
@@ -736,7 +736,11 @@ if os.path.exists(_p):
             const signal = this._signalFromResult(signalResult);
             if (!signal?.length) throw new Error(`${job.noSignalName || 'Simulation'} returned no signal.`);
 
-            // 5) PyNUFFT recon: logic in scan_zero/recon.py (run_sim_recon)
+            // 5) PyNUFFT recon: use the recon matrix directly; phantom resampling
+            // stays on the separate phantom matrix.
+            const reconRef = nvMod.generateFovMaskNifti(nvMod.getReconMatrixDims());
+
+            // 6) PyNUFFT recon: logic in scan_zero/recon.py (run_sim_recon)
             await nvMod.pyodide.loadPackage(["micropip"]);
             await nvMod.pyodide.runPythonAsync(`
 import micropip
@@ -748,7 +752,7 @@ except Exception:
             await this._ensureSimReconPy(nvMod);
             nvMod.pyodide.globals.set("sim_signal_pairs", signal);
             nvMod.pyodide.globals.set("sim_traj_points", traj || []);
-            nvMod.pyodide.globals.set("sim_ref_bytes", ref);
+            nvMod.pyodide.globals.set("sim_ref_bytes", reconRef);
             const recoPathRes = await nvMod.pyodide.runPythonAsync(`
 import sys
 sys.path.insert(0, '/scan_zero')
@@ -760,7 +764,7 @@ run_sim_recon(sim_signal_pairs, sim_traj_points, sim_ref_bytes)
             const recoBytes = nvMod.pyodide.FS.readFile(String(recoPath));
             try { nvMod.pyodide.FS.unlink(String(recoPath)); } catch (_) {}
 
-            // 6) show in Niivue (scan-like naming/path)
+            // 7) show in Niivue (scan-like naming/path)
             job.niftiUrl = URL.createObjectURL(new Blob([recoBytes], { type: "application/octet-stream" }));
             job.seqUrl = URL.createObjectURL(new Blob([seqText], { type: "text/plain" }));
             job.status = 'done';

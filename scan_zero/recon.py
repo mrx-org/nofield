@@ -253,7 +253,7 @@ def _recon_full_nufft(
     omega_scale_z: float,
     apply_dcf: bool = False,
 ) -> tuple[np.ndarray, np.ndarray | None]:
-    """Joint 3D PyNUFFT adjoint using caller-provided ω scaling."""
+    """PyNUFFT adjoint using a 2D plan for singleton-z and 3D otherwise."""
     kxy = tr[:, :2]
     kz_col = tr[:, 2].astype(np.float64) if tr.shape[1] >= 3 else None
     oz = np.zeros(kxy.shape[0], dtype=np.float64)
@@ -271,13 +271,24 @@ def _recon_full_nufft(
     signal_n = signal_1d[:n]
     om_n = om[:n]
     a = NUFFT()
-    kz_plan = max(2 * nz, 4)
-    a.plan(om_n, (nx, ny, nz), (2 * nx, 2 * ny, kz_plan), (8, 8, 8))
+    use_2d_plan = int(nz) == 1 and (
+        kz_col is None or not np.any(np.abs(kz_col[:n]) > 1e-18)
+    )
+    if use_2d_plan:
+        a.plan(om_n[:, :2], (nx, ny), (2 * nx, 2 * ny), (6, 6))
+    else:
+        kz_plan = max(2 * nz, 4)
+        a.plan(om_n, (nx, ny, nz), (2 * nx, 2 * ny, kz_plan), (4, 4, 4))
     dcf: np.ndarray | None = None
     if apply_dcf:
         dcf = _compute_pipe_menon_dcf(a, n)
         signal_n = signal_n * dcf.astype(np.complex64, copy=False)
-    return a.adjoint(signal_n).reshape(nx, ny, nz), dcf
+    reco = a.adjoint(signal_n)
+    if use_2d_plan:
+        reco = np.asarray(reco).reshape(nx, ny, 1)
+    else:
+        reco = np.asarray(reco).reshape(nx, ny, nz)
+    return reco, dcf
 
 
 def _to_py_list(x: Any) -> Any:
@@ -468,6 +479,7 @@ def run_sim_recon(
     if reco is None:
         # Synthetic ω grid (no trajectory or zero kxy fallback).
         om: np.ndarray | None = None
+        use_2d_plan = int(nz_use) == 1
         if tr_np is not None:
             kxy = tr_np[:, :2]
             kz_col = tr_np[:, 2].astype(np.float64) if tr_np.shape[1] >= 3 else None
@@ -475,6 +487,7 @@ def run_sim_recon(
                 oz = np.zeros(kxy.shape[0], dtype=np.float64)
                 if kz_col is not None and kmax_z > 1e-30:
                     oz = (kz_col / kmax_z) * np.pi
+                    use_2d_plan = not np.any(np.abs(kz_col) > 1e-18) and int(nz_use) == 1
                 om2 = np.stack(
                     [
                         (kxy[:, 0] / kmax_x) * np.pi,
@@ -495,18 +508,22 @@ def run_sim_recon(
         om_n = om[:n]
 
         a = NUFFT()
-        kz_plan = max(2 * nz_use, 4)
-        a.plan(om_n, (nx, ny, nz_use), (2 * nx, 2 * ny, kz_plan), (8, 8, 8))
-        reco = a.adjoint(signal_n).reshape(nx, ny, nz_use)
+        if use_2d_plan:
+            a.plan(om_n[:, :2], (nx, ny), (2 * nx, 2 * ny), (6, 6))
+            reco = np.asarray(a.adjoint(signal_n)).reshape(nx, ny, 1)
+        else:
+            kz_plan = max(2 * nz_use, 4)
+            a.plan(om_n, (nx, ny, nz_use), (2 * nx, 2 * ny, kz_plan), (4, 4, 4))
+            reco = np.asarray(a.adjoint(signal_n)).reshape(nx, ny, nz_use)
         if axis_ok is not None:
             _log_recon(
                 "[recon] transform used: kx=PyNUFFT, ky=PyNUFFT, kz=PyNUFFT "
-                "(pynufft joint 3D — fallback synthetic ω or zero-kxy trajectory)"
+                "(pynufft fallback synthetic ω / zero-kxy trajectory)"
             )
         else:
             _log_recon(
                 "[recon] transform used: kx=PyNUFFT, ky=PyNUFFT, kz=PyNUFFT "
-                "(pynufft joint 3D; synthetic ω trajectory)"
+                "(pynufft synthetic ω trajectory)"
             )
     mag3d = np.abs(reco).astype(np.float32)
 

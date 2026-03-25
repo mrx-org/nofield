@@ -68,6 +68,11 @@ This application uses the following open-source software. We are grateful to the
 - **Description:** Read/write neuroimaging file formats (NIfTI, etc.).
 - **License:** [MIT](https://opensource.org/licenses/MIT)
 
+### PyNUFFT
+- **Description:** Non-uniform FFT library used for non-Cartesian MRI reconstruction in the browser.
+- **URL:** https://github.com/jyhmiinlin/pynufft
+- **License:** [MIT](https://opensource.org/licenses/MIT)
+
 ### PyPulseq
 - **Description:** Python package for MRI pulse sequence design.
 - **License:** [MIT](https://opensource.org/licenses/MIT)

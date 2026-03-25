@@ -1,6 +1,6 @@
 # Niivue minimal app (zero-install)
 
-**Version:** `v0.1.2`
+**Version:** `v0.1.3`
 
 This is a **minimal Niivue viewer** implemented as a single `viewer.html` file.
 
@@ -25,7 +25,6 @@ For more insights see insights SPEC_no_field.md
 
 
 **v0.1.1**
-
 - MRzero simulation call fixed; reconstruction logic moved into maintainable `scan_zero/recon.py` and integrated from `scan_zero/scan_module.js`; `insights/SPEC_scan_module.md` updated accordingly.
 - Niivue UI: default **Mask Z** numeric field set to `1` so it matches the slider default (`niivue_app.js`).
 

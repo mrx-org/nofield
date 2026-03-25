@@ -98,6 +98,12 @@ export class NiivueModule {
     this.maskXVal = null;
     this.maskYVal = null;
     this.maskZVal = null;
+    this.phantomX = null;
+    this.phantomY = null;
+    this.phantomZ = null;
+    this.phantomXVal = null;
+    this.phantomYVal = null;
+    this.phantomZVal = null;
     this.downloadFovMeshBtn = null;
     this.azVal = null;
     this.elVal = null;
@@ -740,27 +746,51 @@ export class NiivueModule {
 
   _getPanelExportHtml(noContainer = false) {
     const content = `
-          <h3 class="panel-title">Export & Mask</h3>
+          <h3 class="panel-title">Recon Matrix</h3>
           <div class="sliderGroup">
             <div class="sliderRow">
-              <div>Mask X</div>
+              <div>Recon X</div>
               <div class="input-sync">
                 <input id="maskXVal-${this.instanceId}" type="number" class="num-input" step="1" />
                 <input id="maskX-${this.instanceId}" type="range" min="16" max="512" step="1" value="128" />
               </div>
             </div>
             <div class="sliderRow">
-              <div>Mask Y</div>
+              <div>Recon Y</div>
               <div class="input-sync">
                 <input id="maskYVal-${this.instanceId}" type="number" class="num-input" step="1" />
                 <input id="maskY-${this.instanceId}" type="range" min="16" max="512" step="1" value="128" />
               </div>
             </div>
             <div class="sliderRow">
-              <div>Mask Z</div>
+              <div>Recon Z</div>
               <div class="input-sync">
                 <input id="maskZVal-${this.instanceId}" type="number" class="num-input" step="1" value="1" />
                 <input id="maskZ-${this.instanceId}" type="range" min="1" max="512" step="1" value="1" />
+              </div>
+            </div>
+          </div>
+          <h3 class="panel-title" style="margin-top: 12px;">Phantom Matrix</h3>
+          <div class="sliderGroup">
+            <div class="sliderRow">
+              <div>Phantom X</div>
+              <div class="input-sync">
+                <input id="phantomXVal-${this.instanceId}" type="number" class="num-input" step="1" />
+                <input id="phantomX-${this.instanceId}" type="range" min="16" max="512" step="1" value="128" />
+              </div>
+            </div>
+            <div class="sliderRow">
+              <div>Phantom Y</div>
+              <div class="input-sync">
+                <input id="phantomYVal-${this.instanceId}" type="number" class="num-input" step="1" />
+                <input id="phantomY-${this.instanceId}" type="range" min="16" max="512" step="1" value="128" />
+              </div>
+            </div>
+            <div class="sliderRow">
+              <div>Phantom Z</div>
+              <div class="input-sync">
+                <input id="phantomZVal-${this.instanceId}" type="number" class="num-input" step="1" value="1" />
+                <input id="phantomZ-${this.instanceId}" type="range" min="1" max="512" step="1" value="1" />
               </div>
             </div>
           </div>
@@ -831,6 +861,12 @@ export class NiivueModule {
     this.maskXVal = qs("maskXVal");
     this.maskYVal = qs("maskYVal");
     this.maskZVal = qs("maskZVal");
+    this.phantomX = qs("phantomX");
+    this.phantomY = qs("phantomY");
+    this.phantomZ = qs("phantomZ");
+    this.phantomXVal = qs("phantomXVal");
+    this.phantomYVal = qs("phantomYVal");
+    this.phantomZVal = qs("phantomZVal");
     this.debugInfo = qs("debugInfo");
     this.downloadFovMeshBtn = qs("downloadFovMesh");
     this.azVal = qs("azVal");
@@ -1471,6 +1507,9 @@ os.makedirs('/phantom/averaged', exist_ok=True)
     this.bindBiDirectional(this.maskX, this.maskXVal, () => this.syncFovLabels());
     this.bindBiDirectional(this.maskY, this.maskYVal, () => this.syncFovLabels());
     this.bindBiDirectional(this.maskZ, this.maskZVal, () => this.syncFovLabels());
+    this.bindBiDirectional(this.phantomX, this.phantomXVal, () => this.syncFovLabels());
+    this.bindBiDirectional(this.phantomY, this.phantomYVal, () => this.syncFovLabels());
+    this.bindBiDirectional(this.phantomZ, this.phantomZVal, () => this.syncFovLabels());
     this.syncFovLabels();
 
     this.downloadFovMeshBtn.addEventListener("click", () => this.handleDownloadFovMesh());
@@ -2350,7 +2389,28 @@ os.makedirs('/phantom/averaged', exist_ok=True)
     this.fovOffXVal.value = Number(this.fovOffX.value).toFixed(1); this.fovOffYVal.value = Number(this.fovOffY.value).toFixed(1); this.fovOffZVal.value = Number(this.fovOffZ.value).toFixed(1);
     this.fovRotXVal.value = Math.round(Number(this.fovRotX.value)); this.fovRotYVal.value = Math.round(Number(this.fovRotY.value)); this.fovRotZVal.value = Math.round(Number(this.fovRotZ.value));
     this.maskXVal.value = Math.round(Number(this.maskX.value)); this.maskYVal.value = Math.round(Number(this.maskY.value)); this.maskZVal.value = Math.round(Number(this.maskZ.value));
+    if (this.phantomXVal && this.phantomYVal && this.phantomZVal) {
+      this.phantomXVal.value = Math.round(Number(this.phantomX.value));
+      this.phantomYVal.value = Math.round(Number(this.phantomY.value));
+      this.phantomZVal.value = Math.round(Number(this.phantomZ.value));
+    }
     this.zoom2DVal.value = parseFloat(this.zoom2D.value).toFixed(2);
+  }
+
+  getReconMatrixDims() {
+    return [
+      Math.max(1, Math.round(Number(this.maskX?.value) || 1)),
+      Math.max(1, Math.round(Number(this.maskY?.value) || 1)),
+      Math.max(1, Math.round(Number(this.maskZ?.value) || 1)),
+    ];
+  }
+
+  getPhantomMatrixDims() {
+    return [
+      Math.max(1, Math.round(Number(this.phantomX?.value) || 1)),
+      Math.max(1, Math.round(Number(this.phantomY?.value) || 1)),
+      Math.max(1, Math.round(Number(this.phantomZ?.value) || 1)),
+    ];
   }
 
   rebuildFovLive(forceSync = false) {
@@ -2439,11 +2499,17 @@ os.makedirs('/phantom/averaged', exist_ok=True)
     numInput.addEventListener("input", () => { if (numInput.value !== "") { slider.value = numInput.value; if (callback) callback(); } });
   }
 
-  /** Binary mask NIfTI for the current FOV box + mask grid. CROP / SCAN▶ / SCAN▶▶ pipelines assume the Pulseq file uses the same FOV (mm) and encoding grid as this geometry. */
-  generateFovMaskNifti() {
+  /** Binary mask NIfTI for the current FOV box + chosen grid. */
+  generateFovMaskNifti(matrixDims = null) {
     const geometry = this.getFovGeometry();
     const fovCenterWorld = geometry.centerWorld, fovSizeMm = geometry.sizeMm, fovRotDeg = geometry.rotationDeg;
-    const mDims = [Number(this.maskX.value), Number(this.maskY.value), Number(this.maskZ.value)];
+    const mDims = Array.isArray(matrixDims) && matrixDims.length >= 3
+      ? [
+          Math.max(1, Math.round(Number(matrixDims[0]) || 1)),
+          Math.max(1, Math.round(Number(matrixDims[1]) || 1)),
+          Math.max(1, Math.round(Number(matrixDims[2]) || 1)),
+        ]
+      : this.getReconMatrixDims();
     const vSpacing = [fovSizeMm[0]/mDims[0], fovSizeMm[1]/mDims[1], fovSizeMm[2]/mDims[2]];
     const toRad = (d) => (d * Math.PI) / 180;
     const rX = toRad(fovRotDeg[0]), rY = toRad(fovRotDeg[1]), rZ = toRad(fovRotDeg[2]);
@@ -2541,7 +2607,7 @@ os.makedirs('/phantom/averaged', exist_ok=True)
       downloadTextFile("fov-box-ras.stl", toStl(geometry.vertsWorld, geometry.tris));
       const vLps = new Float32Array(geometry.vertsWorld); for(let i=0;i<vLps.length;i+=3){ vLps[i]=-vLps[i]; vLps[i+1]=-vLps[i+1]; }
       downloadTextFile("fov-box-lps.stl", toStl(vLps, geometry.tris));
-      const maskBytes = this.generateFovMaskNifti();
+      const maskBytes = this.generateFovMaskNifti(this.getPhantomMatrixDims());
       const maskUrl = URL.createObjectURL(new Blob([maskBytes]));
       const maskLink = document.createElement("a"); maskLink.href = maskUrl; maskLink.download = "fov-mask.nii"; maskLink.click();
       if (this.nv.volumes?.length) setTimeout(() => this.downloadVolume(this.nv.volumes[0]), 300);
@@ -2578,7 +2644,7 @@ os.makedirs('/phantom/averaged', exist_ok=True)
     try {
       const debugResample = this.options.debugResampleToFov === true;
       this.resampleToFovBtn.disabled = true;
-      const ref = this.generateFovMaskNifti();
+      const ref = this.generateFovMaskNifti(this.getPhantomMatrixDims());
       this.pyodide.globals.set("reference_bytes", ref);
       if (debugResample) {
         this._logResampleToFov("reference", "FoV mask", {
