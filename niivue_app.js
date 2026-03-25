@@ -121,6 +121,8 @@ export class NiivueModule {
     this.volumeGroups = [];
     this.jsonEditorCm = null;
     this.jsonTabCurrentName = null;
+    /** Set when default phantom fetch finishes before shared Pyodide is attached (bootstrap sync). */
+    this._pendingPhantomVfs = null;
     this.collapsedGroups = new Set();
     this._initWaiters = [];
     this.selectedVolume = null; // Track which volume is selected for preview
@@ -585,10 +587,25 @@ export class NiivueModule {
     const name = jsonName ?? this.jsonTabCurrentName;
     if (!name) { this.setJsonTabStatus('No JSON selected.'); return; }
     if (!this.pyodide) { this.setJsonTabStatus('Pyodide not ready.'); return; }
-    // Sync current editor content to VFS before running
-    const editorContent = this.getJsonEditorValue();
-    if (editorContent.trim()) {
-      try { this.pyodide.FS.writeFile(`/phantom/${name}`, editorContent); } catch (_) {}
+    try {
+      this.pyodide.FS.mkdirTree('/phantom');
+      this.pyodide.FS.mkdirTree('/phantom/averaged');
+    } catch (_) {}
+    // Sync JSON to VFS (Execute reads /phantom/<name>); editor may be empty while volumeGroups still hold text
+    let jsonBody = this.getJsonEditorValue();
+    if (!String(jsonBody).trim()) {
+      const g = this.volumeGroups.find((vg) => vg.jsonFileName === name && vg.jsonContent != null);
+      if (g) jsonBody = String(g.jsonContent);
+    }
+    if (!String(jsonBody).trim()) {
+      this.setJsonTabStatus('No JSON text to execute. Reload the phantom or paste JSON.');
+      return;
+    }
+    try {
+      this.pyodide.FS.writeFile(`/phantom/${name}`, jsonBody);
+    } catch (e) {
+      this.setJsonTabStatus(`Could not write JSON to VFS: ${e.message}`);
+      return;
     }
     this.setJsonTabStatus('Executing...');
     this.setStatus(`Executing phantom: ${name}`);
@@ -1461,6 +1478,7 @@ os.makedirs('/phantom/averaged', exist_ok=True)
       if (jsonFile && niftiFiles.length > 0) {
         if (!await this.confirmPhantomReset()) return;
         this.resetViewer();
+        await this.populatePyodideVFS(niftiFiles, [jsonFile]);
         await this.loadMultiPhantomFromFiles(jsonFile, niftiFiles);
         if (this.options.showJsonTab) this.updateJsonTab();
       } else if (jsonFile && niftiFiles.length === 0) {
@@ -2085,7 +2103,7 @@ os.makedirs('/phantom/averaged', exist_ok=True)
 
   /**
    * Reference volume for mapping a scan NIfTI's bounding box into FOV slider space.
-   * Prefer first non-scan (phantom) so SIM/CUT outputs align with planning grid; else volumes[0].
+   * Prefer first non-scan (phantom) so SIM/CROP outputs align with planning grid; else volumes[0].
    */
   getReferenceVolumeInfoForFovSync() {
     const list = this.nv?.volumes;
@@ -2409,7 +2427,7 @@ os.makedirs('/phantom/averaged', exist_ok=True)
     numInput.addEventListener("input", () => { if (numInput.value !== "") { slider.value = numInput.value; if (callback) callback(); } });
   }
 
-  /** Binary mask NIfTI for the current FOV box + mask grid. CUT / > SIM / >> SIM pipelines assume the Pulseq file uses the same FOV (mm) and encoding grid as this geometry. */
+  /** Binary mask NIfTI for the current FOV box + mask grid. CROP / SCAN▶ / SCAN▶▶ pipelines assume the Pulseq file uses the same FOV (mm) and encoding grid as this geometry. */
   generateFovMaskNifti() {
     const geometry = this.getFovGeometry();
     const fovCenterWorld = geometry.centerWorld, fovSizeMm = geometry.sizeMm, fovRotDeg = geometry.rotationDeg;
@@ -2942,34 +2960,32 @@ os.makedirs('/phantom/averaged', exist_ok=True)
     if (this.options.showJsonTab) this.updateJsonTab();
   }
 
-  updateJsonTab() {
-    if (!this.options.showJsonTab) return;
-    const root = this.containerControls || document;
-    const listEl = root.querySelector(`#json-tab-list-${this.instanceId}`);
-    if (!listEl) return;
-    listEl.innerHTML = "";
-    if (!this.pyodide) {
-      this.jsonTabCurrentName = null;
-      this.setJsonEditorValue("");
-      return;
+  /** JSON text still in memory on volume groups when /phantom was never filled (default bundle, Add File). */
+  _jsonConfigsFromVolumeGroups() {
+    const map = new Map();
+    for (const g of this.volumeGroups) {
+      if (g.jsonContent == null || String(g.jsonContent).trim() === "") continue;
+      const fn = g.jsonFileName || (g.jsonName ? `${g.jsonName}.json` : null);
+      if (!fn || !fn.toLowerCase().endsWith(".json")) continue;
+      if (!map.has(fn)) map.set(fn, String(g.jsonContent));
     }
-    let jsonNames = [];
-    try {
-      jsonNames = this.pyodide.FS.readdir('/phantom').filter(f => f.endsWith('.json'));
-    } catch (_) {}
-    jsonNames.forEach(name => {
+    return map;
+  }
+
+  _bindJsonTabListButtons(listEl, jsonNames, getContent) {
+    jsonNames.forEach((name) => {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "btn json-tab-list-btn";
       btn.style.cssText = "text-align:left; padding:8px 10px; justify-content:flex-start;";
       btn.textContent = name;
       btn.onclick = () => {
-        listEl.querySelectorAll(".json-tab-list-btn.active").forEach(b => b.classList.remove("active"));
+        listEl.querySelectorAll(".json-tab-list-btn.active").forEach((b) => b.classList.remove("active"));
         btn.classList.add("active");
         this.jsonTabCurrentName = name;
         try {
-          const content = this.pyodide.FS.readFile(`/phantom/${name}`, { encoding: 'utf8' });
-          this.setJsonEditorValue(content);
+          const content = getContent(name);
+          this.setJsonEditorValue(content ?? "");
         } catch (_) {
           this.setJsonEditorValue("");
         }
@@ -2977,15 +2993,42 @@ os.makedirs('/phantom/averaged', exist_ok=True)
       listEl.appendChild(btn);
     });
     if (jsonNames.length > 0) {
-      const prevIdx = this.jsonTabCurrentName
-        ? jsonNames.indexOf(this.jsonTabCurrentName)
-        : -1;
+      const prevIdx = this.jsonTabCurrentName ? jsonNames.indexOf(this.jsonTabCurrentName) : -1;
       const toSelect = prevIdx >= 0 ? prevIdx : 0;
       listEl.querySelectorAll(".json-tab-list-btn")[toSelect]?.click();
-    } else {
-      this.jsonTabCurrentName = null;
-      this.setJsonEditorValue("");
     }
+  }
+
+  updateJsonTab() {
+    if (!this.options.showJsonTab) return;
+    const root = this.containerControls || document;
+    const listEl = root.querySelector(`#json-tab-list-${this.instanceId}`);
+    if (!listEl) return;
+    listEl.innerHTML = "";
+
+    let jsonNames = [];
+    if (this.pyodide) {
+      try {
+        jsonNames = this.pyodide.FS.readdir("/phantom").filter((f) => f.endsWith(".json"));
+      } catch (_) {}
+    }
+
+    if (jsonNames.length > 0) {
+      this._bindJsonTabListButtons(listEl, jsonNames, (name) =>
+        this.pyodide.FS.readFile(`/phantom/${name}`, { encoding: "utf8" })
+      );
+      return;
+    }
+
+    const fromGroups = this._jsonConfigsFromVolumeGroups();
+    if (fromGroups.size > 0) {
+      const names = [...fromGroups.keys()].sort();
+      this._bindJsonTabListButtons(listEl, names, (name) => fromGroups.get(name));
+      return;
+    }
+
+    this.jsonTabCurrentName = null;
+    this.setJsonEditorValue("");
   }
 
   updatePreviewFromSelection() {
@@ -3026,7 +3069,18 @@ os.makedirs('/phantom/averaged', exist_ok=True)
     const jsonFile = files.find((f) => f.name.toLowerCase().endsWith(".json"));
     const niftiFiles = files.filter((f) => /\.nii(\.gz)?$/i.test(f.name));
     if (!jsonFile || niftiFiles.length === 0) throw new Error("Default phantom: missing JSON or NIfTIs");
-    await this.loadMultiPhantomFromFiles(jsonFile, niftiFiles);
+    if (this.pyodide) {
+      await this.populatePyodideVFS(niftiFiles, [jsonFile]);
+      this._pendingPhantomVfs = null;
+    } else {
+      this._pendingPhantomVfs = { jsonFile, niftiFiles };
+    }
+    try {
+      await this.loadMultiPhantomFromFiles(jsonFile, niftiFiles);
+    } catch (e) {
+      this._pendingPhantomVfs = null;
+      throw e;
+    }
     this.jsonTabCurrentName = jsonFile.name;
     if (this.options.showJsonTab) this.updateJsonTab();
   }

@@ -20,6 +20,7 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/codemirror.min.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/theme/monokai.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/codemirror.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/javascript/javascript.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/python/python.min.js"></script>
 
     <style>
@@ -217,7 +218,7 @@
     <div class="lab-shell">
         <header>
             <div class="header-content">
-                <div class="header-title">No-field <span class="header-subtitle">Scanner</span><span class="app-version" aria-label="Version v0.1.1">v0.1.1</span></div>
+                <div class="header-title">No-field <span class="header-subtitle">Scanner</span><span class="app-version" aria-label="Version v0.1.2">v0.1.2</span></div>
                 <button type="button" id="credits-btn" class="credits-btn" title="Credits &amp; dependencies"><i class="bi bi-award" aria-hidden="true"></i></button>
             </div>
         </header>
@@ -630,6 +631,16 @@
                         explorer.detectVersions(),
                         explorer.loadSourcesFromConfig(configCode)
                     ]);
+                    if (nvModule._pendingPhantomVfs) {
+                        const { jsonFile, niftiFiles } = nvModule._pendingPhantomVfs;
+                        try {
+                            await nvModule.populatePyodideVFS(niftiFiles, [jsonFile]);
+                        } catch (err) {
+                            console.warn('Sync default phantom to Pyodide VFS failed:', err);
+                        }
+                        nvModule._pendingPhantomVfs = null;
+                    }
+                    if (nvModule.options.showJsonTab) nvModule.updateJsonTab();
                     await phantomReady.catch(() => {});
                     hideLoaderAndShowFooter();
                     // Plot stack (matplotlib + optimized plot) non-blocking; await in explorer when user runs first plot

@@ -18,6 +18,11 @@ Per-axis ``offset_n = median(k*FOV - round(k*FOV))`` removes a global k-space sh
 
 If **all** axes pass the Cartesian test, reconstruction uses ``numpy.fft.ifftn``;
 otherwise joint 3D PyNUFFT is used for the whole volume (no per-axis mixing).
+
+For non-Cartesian trajectories, density compensation is applied before the
+adjoint NUFFT using a short Pipe-Menon style fixed-point iteration on PyNUFFT's
+interpolation / gridding operators. This stays general across radial / spiral
+style trajectories while remaining Pyodide-friendly.
 """
 from __future__ import annotations
 
@@ -33,6 +38,8 @@ DEFAULT_OUT_PATH = "/tmp/__sim_pipeline_reco.nii"
 
 # Match MRpro ``grid_detection_tolerance`` on dimensionless index ``k * FOV``.
 _GRID_TOL = 1e-3
+_DCF_ITERS = 20
+_DCF_EPS = 1e-6
 
 
 def _log_recon(msg: str) -> None:
@@ -180,6 +187,24 @@ def _axis_bins(k: np.ndarray, fov_m: float, offset_n: float, n_len: int) -> np.n
     return (np.rint(d_adj).astype(np.int64) % n_len).astype(np.intp)
 
 
+def _compute_pipe_menon_dcf(a: NUFFT, n_samples: int, n_iter: int = _DCF_ITERS) -> np.ndarray:
+    """Fixed-point Pipe-Menon DCF using PyNUFFT interpolation operators."""
+    if n_samples < 1:
+        raise ValueError("Cannot compute DCF for empty trajectory.")
+    try:
+        y2k = a._y2k_cpu
+        k2y = a._k2y_cpu
+    except AttributeError as exc:
+        raise RuntimeError("PyNUFFT interpolation operators unavailable for DCF.") from exc
+
+    w = np.ones(int(n_samples), dtype=np.complex64)
+    for _ in range(int(n_iter)):
+        gridded = y2k(w)
+        back = k2y(gridded)
+        w = w / np.maximum(np.abs(back), _DCF_EPS)
+    return np.abs(w).astype(np.float32)
+
+
 def _recon_cartesian_ifft(
     signal_1d: np.ndarray,
     tr: np.ndarray,
@@ -223,20 +248,21 @@ def _recon_full_nufft(
     nx: int,
     ny: int,
     nz: int,
-    kmax_x: float,
-    kmax_y: float,
-    kmax_z: float,
-) -> np.ndarray:
-    """Joint 3D PyNUFFT adjoint (all axes non-Cartesian or synthetic ω)."""
+    omega_scale_x: float,
+    omega_scale_y: float,
+    omega_scale_z: float,
+    apply_dcf: bool = False,
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """Joint 3D PyNUFFT adjoint using caller-provided ω scaling."""
     kxy = tr[:, :2]
     kz_col = tr[:, 2].astype(np.float64) if tr.shape[1] >= 3 else None
     oz = np.zeros(kxy.shape[0], dtype=np.float64)
-    if kz_col is not None and kmax_z > 1e-30:
-        oz = (kz_col / kmax_z) * np.pi
+    if kz_col is not None and omega_scale_z > 1e-30:
+        oz = (kz_col / omega_scale_z) * np.pi
     om2 = np.stack(
         [
-            (kxy[:, 0] / kmax_x) * np.pi,
-            (kxy[:, 1] / kmax_y) * np.pi,
+            (kxy[:, 0] / omega_scale_x) * np.pi,
+            (kxy[:, 1] / omega_scale_y) * np.pi,
         ],
         axis=-1,
     )
@@ -247,7 +273,11 @@ def _recon_full_nufft(
     a = NUFFT()
     kz_plan = max(2 * nz, 4)
     a.plan(om_n, (nx, ny, nz), (2 * nx, 2 * ny, kz_plan), (8, 8, 8))
-    return a.adjoint(signal_n).reshape(nx, ny, nz)
+    dcf: np.ndarray | None = None
+    if apply_dcf:
+        dcf = _compute_pipe_menon_dcf(a, n)
+        signal_n = signal_n * dcf.astype(np.complex64, copy=False)
+    return a.adjoint(signal_n).reshape(nx, ny, nz), dcf
 
 
 def _to_py_list(x: Any) -> Any:
@@ -404,7 +434,11 @@ def run_sim_recon(
     elif tr_np is not None and axis_ok is not None and not all(axis_ok):
         if kmax_x > 1e-30 and kmax_y > 1e-30 and np.abs(tr_np[:, :2]).max() > 1e-18:
             n_full = min(int(signal.size), int(tr_np.shape[0]))
-            reco = _recon_full_nufft(
+            _log_recon(
+                "[recon] omega-scale target kmax: (%.6g, %.6g, %.6g) 1/m"
+                % (kmax_x, kmax_y, kmax_z)
+            )
+            reco, dcf = _recon_full_nufft(
                 signal[:n_full],
                 tr_np[:n_full],
                 nx,
@@ -413,10 +447,22 @@ def run_sim_recon(
                 kmax_x,
                 kmax_y,
                 kmax_z,
+                apply_dcf=True,
+            )
+            if dcf is None:
+                raise RuntimeError("Pipe-Menon DCF failed to produce weights.")
+            _log_recon(
+                "[recon] dcf: method=pipe-menon iters=%d mean=%.4g range=[%.4g, %.4g]"
+                % (
+                    _DCF_ITERS,
+                    float(np.mean(dcf)),
+                    float(np.min(dcf)),
+                    float(np.max(dcf)),
+                )
             )
             _log_recon(
                 "[recon] transform used: kx=PyNUFFT, ky=PyNUFFT, kz=PyNUFFT "
-                "(pynufft joint 3D NUFFT — not all axes on Cartesian grid after offset)"
+                "(pynufft joint 3D NUFFT + Pipe-Menon density compensation)"
             )
 
     if reco is None:

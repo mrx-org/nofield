@@ -8,7 +8,7 @@ export const TOOL_MR0SIM = 'wss://tool-mr0sim.fly.dev/tool';
 
 /**
  * ScanModule - Handles the scanning simulation queue
- * Borrows resampling logic from NiivueModule for a "Fake Scan"
+ * Borrows resampling logic from NiivueModule for FOV crop (no sequence run)
  */
 export class ScanModule {
     constructor() {
@@ -63,8 +63,8 @@ export class ScanModule {
                     <h3 class="section-title" style="margin: 0;">RUN</h3>
                 </div>
                 <div class="scan-header" style="display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem;">
-                    <button id="btn-start-cut" class="scan-btn" title="Resample first volume to FOV (fake scan)">
-                        CUT
+                    <button id="btn-start-crop" class="scan-btn" title="Resample first volume to FOV (crop to box)">
+                        CROP
                     </button>
                     <button id="btn-start-sim-mr0" class="scan-btn" title="MR0 (tool-mr0sim)">
                         SCAN<span class="icon">▶</span> 
@@ -82,7 +82,7 @@ export class ScanModule {
             </div>
         `;
 
-        this.container.querySelector('#btn-start-cut').onclick = () => this.startScan();
+        this.container.querySelector('#btn-start-crop').onclick = () => this.startCrop();
         this.container.querySelector('#btn-start-sim-mr0').onclick = () => this.startSimMr0();
         this.container.querySelector('#btn-start-sim-fast').onclick = () => this.startSimFast();
         
@@ -96,8 +96,8 @@ export class ScanModule {
         if (el) el.textContent = this.currentSequence ? (this.currentSequence.displayName || this.currentSequence.name) : 'None';
     }
 
-    async startScan() {
-        // CUT = resample current viewer volume to FOV mask only (no seq execution / no .seq artifact)
+    async startCrop() {
+        // CROP = resample current viewer volume to FOV mask only (no seq execution / no .seq artifact)
         const nvMod = window.nvModule;
         if (!nvMod || !nvMod.nv?.volumes?.length) {
             alert("No volume loaded in Niivue.");
@@ -107,15 +107,15 @@ export class ScanModule {
         this.scanCounter++;
         const now = new Date();
         const pad = (n) => String(n).padStart(2, '0');
-        const baseName = `scan_${this.scanCounter}_cut`;
+        const baseName = `scan_${this.scanCounter}_crop`;
 
         const job = {
             id: 'job_' + now.getTime(),
             scanNumber: this.scanCounter,
             baseName: baseName,
-            name: "cut",
-            protocol: "CUT (FOV)",
-            cutOnly: true,
+            name: "crop",
+            protocol: "CROP (FOV)",
+            cropOnly: true,
             status: 'pending',
             timestamp: `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`,
             niftiUrl: null,
@@ -126,7 +126,7 @@ export class ScanModule {
         this.queue.unshift(job); // Add to top of queue
         this.updateQueueUI();
         
-        await this.runFakeScan(job);
+        await this.runCropScan(job);
     }
 
     _enqueueSimJob({ baseSuffix, queueName, protocol, simToolUrl, simLogLabel, noSignalName }) {
@@ -171,10 +171,10 @@ export class ScanModule {
         }
         const job = this._enqueueSimJob({
             baseSuffix: 'simfast',
-            queueName: 'SCAN▶▶ ',
-            protocol: 'SIM▶▶ (rapisim)',
+            queueName: '▶▶',
+            protocol: '(▶▶)',
             simToolUrl: TOOL_RAPISIM,
-            simLogLabel: 'SCAN ▶▶ ',
+            simLogLabel: '(▶▶)',
             noSignalName: 'Rapisim',
         });
         await this.runSimPipeline(job);
@@ -196,16 +196,16 @@ export class ScanModule {
         }
         const job = this._enqueueSimJob({
             baseSuffix: 'sim_mr0',
-            queueName: 'SIM▶',
-            protocol: 'SIM▶ (MR0)',
+            queueName: '▶',
+            protocol: '(▶)',
             simToolUrl: TOOL_MR0SIM,
-            simLogLabel: 'SIM▶',
+            simLogLabel: '(▶)',
             noSignalName: 'MR0 sim',
         });
         await this.runSimPipeline(job);
     }
 
-    async runFakeScan(job) {
+    async runCropScan(job) {
         // Borrow logic from window.nvModule (NiivueModule instance)
         const nvMod = window.nvModule;
         
@@ -234,7 +234,7 @@ export class ScanModule {
         this.updateQueueUI();
 
         try {
-            // Fake delay to simulate acquisition time
+            // Short delay to simulate acquisition time
             await new Promise(r => setTimeout(r, 2000));
 
             // Borrowing logic from niivue_app.js handleResampleToFov()
@@ -796,10 +796,10 @@ run_sim_recon(sim_signal_pairs, sim_traj_points, sim_ref_bytes)
                     ${job.status === 'done' ? `
                         <div class="action-row">
                             <button class="view-btn">VIEW SCAN</button>
-                            ${job.cutOnly ? '' : '<button class="view-seq-btn">VIEW SEQ</button>'}
+                            ${job.cropOnly ? '' : '<button class="view-seq-btn">VIEW SEQ</button>'}
                         </div>
                         <div class="action-row small-btns">
-                            ${job.cutOnly ? '' : '<button class="dl-seq-btn" title="Download .seq file"><i class="bi bi-download" aria-hidden="true"></i></button>'}
+                            ${job.cropOnly ? '' : '<button class="dl-seq-btn" title="Download .seq file"><i class="bi bi-download" aria-hidden="true"></i></button>'}
                             <button class="remove-job-btn" title="Remove scan"><i class="bi bi-x-lg" aria-hidden="true"></i></button>
                         </div>
                     ` : ''}
@@ -951,7 +951,7 @@ data
                     nvMod.updatePreviewFromSelection();
                 }
 
-                // Match volume-list scan click: FOV box from this scan's NIfTI (CUT + SIM)
+                // Match volume-list scan click: FOV box from this scan's NIfTI (CROP + SIM)
                 if (typeof nvMod.syncFovFromScanVolume === 'function') {
                     nvMod.syncFovFromScanVolume(targetVol);
                 }
