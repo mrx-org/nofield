@@ -1,6 +1,6 @@
 # Niivue minimal app (zero-install)
 
-**Version:** `v0.1.1`
+**Version:** `v0.1.2`
 
 This is a **minimal Niivue viewer** implemented as a single `viewer.html` file.
 
@@ -17,7 +17,9 @@ For more insights see insights SPEC_no_field.md
 
 
 **v0.1.2**
-
+- fixed pynufft recon + simple density compensation
+- still blurry but roughly functional
+- fixed json execute
 
 **v0.1.1**
 
